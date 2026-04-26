@@ -5,36 +5,44 @@ class WPSeoBoss_Writer {
 
     // ── SEO Meta Write-back ──────────────────────────────────────────────────
 
-    public static function write_seo_meta(int $post_id, string $title, string $description, string $seo_plugin): bool {
+    public static function write_seo_meta(int $post_id, string $title, string $description, string $seo_plugin, string $focus_keyword = ''): bool {
         switch ($seo_plugin) {
             case 'yoast':
-                return self::write_yoast($post_id, $title, $description);
+                return self::write_yoast($post_id, $title, $description, $focus_keyword);
             case 'rankmath':
-                return self::write_rankmath($post_id, $title, $description);
+                return self::write_rankmath($post_id, $title, $description, $focus_keyword);
             case 'aioseo':
-                return self::write_aioseo($post_id, $title, $description);
+                return self::write_aioseo($post_id, $title, $description, $focus_keyword);
             default:
-                // Fallback: write to standard post fields
                 wp_update_post(['ID' => $post_id, 'post_title' => $title]);
                 return true;
         }
     }
 
-    private static function write_yoast(int $post_id, string $title, string $description): bool {
+    private static function write_yoast(int $post_id, string $title, string $description, string $focus_keyword): bool {
         update_post_meta($post_id, '_yoast_wpseo_title', sanitize_text_field($title));
         update_post_meta($post_id, '_yoast_wpseo_metadesc', sanitize_textarea_field($description));
+        if ($focus_keyword) {
+            update_post_meta($post_id, '_yoast_wpseo_focuskw', sanitize_text_field($focus_keyword));
+        }
         return true;
     }
 
-    private static function write_rankmath(int $post_id, string $title, string $description): bool {
+    private static function write_rankmath(int $post_id, string $title, string $description, string $focus_keyword): bool {
         update_post_meta($post_id, 'rank_math_title', sanitize_text_field($title));
         update_post_meta($post_id, 'rank_math_description', sanitize_textarea_field($description));
+        if ($focus_keyword) {
+            update_post_meta($post_id, 'rank_math_focus_keyword', sanitize_text_field($focus_keyword));
+        }
         return true;
     }
 
-    private static function write_aioseo(int $post_id, string $title, string $description): bool {
+    private static function write_aioseo(int $post_id, string $title, string $description, string $focus_keyword): bool {
         update_post_meta($post_id, '_aioseo_title', sanitize_text_field($title));
         update_post_meta($post_id, '_aioseo_description', sanitize_textarea_field($description));
+        if ($focus_keyword) {
+            update_post_meta($post_id, '_aioseo_keyphrases', wp_json_encode([['keyphrase' => sanitize_text_field($focus_keyword), 'score' => 0]]));
+        }
         return true;
     }
 

@@ -37,12 +37,13 @@ class WPSeoBoss_API {
     public static function handle_apply_fix(\WP_REST_Request $request): \WP_REST_Response {
         $params = $request->get_json_params();
 
-        $post_id      = intval($params['post_id'] ?? 0);
-        $seo_plugin   = sanitize_text_field($params['seo_plugin'] ?? 'none');
-        $page_builder = sanitize_text_field($params['page_builder'] ?? 'gutenberg');
-        $meta_title   = sanitize_text_field($params['meta_title'] ?? '');
-        $meta_desc    = sanitize_textarea_field($params['meta_description'] ?? '');
-        $content      = $params['content'] ?? '';
+        $post_id       = intval($params['post_id'] ?? 0);
+        $seo_plugin    = sanitize_text_field($params['seo_plugin'] ?? 'none');
+        $page_builder  = sanitize_text_field($params['page_builder'] ?? 'gutenberg');
+        $meta_title    = sanitize_text_field($params['meta_title'] ?? '');
+        $meta_desc     = sanitize_textarea_field($params['meta_description'] ?? '');
+        $focus_keyword = sanitize_text_field($params['focus_keyword'] ?? '');
+        $content       = $params['content'] ?? '';
 
         if (!$post_id || !get_post($post_id)) {
             return new \WP_REST_Response(['error' => 'Invalid post_id'], 400);
@@ -50,8 +51,8 @@ class WPSeoBoss_API {
 
         $results = [];
 
-        if ($meta_title || $meta_desc) {
-            $results['seo_meta'] = WPSeoBoss_Writer::write_seo_meta($post_id, $meta_title, $meta_desc, $seo_plugin);
+        if ($meta_title || $meta_desc || $focus_keyword) {
+            $results['seo_meta'] = WPSeoBoss_Writer::write_seo_meta($post_id, $meta_title, $meta_desc, $seo_plugin, $focus_keyword);
         }
 
         if ($content) {

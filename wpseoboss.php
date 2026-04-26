@@ -1,18 +1,20 @@
 <?php
 /**
- * Plugin Name: WPSeoBoss Connector
- * Plugin URI:  https://wpseoboss.com
- * Description: Connects your WordPress site to WPSeoBoss for AI-powered SEO fix write-back.
- * Version:     1.0.0
- * Author:      WPSeoBoss
- * Author URI:  https://wpseoboss.com
- * License:     GPL-2.0-or-later
- * Text Domain: wpseoboss
+ * Plugin Name:       WPSeoBoss Connector
+ * Plugin URI:        https://wpseoboss.com
+ * Description:       Connects your WordPress site to WPSeoBoss for AI-powered SEO fix write-back.
+ * Version:           1.1.0
+ * Author:            WPSeoBoss
+ * Author URI:        https://wpseoboss.com
+ * License:           GPL-2.0-or-later
+ * Text Domain:       wpseoboss
+ * GitHub Plugin URI: https://github.com/cbarnes360/wpseoboss-plugin
+ * Primary Branch:    main
  */
 
 defined('ABSPATH') || exit;
 
-define('WPSEOBOSS_VERSION', '1.0.0');
+define('WPSEOBOSS_VERSION', '1.1.0');
 define('WPSEOBOSS_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WPSEOBOSS_OPTION_KEY', 'wpseoboss_api_key');
 define('WPSEOBOSS_APP_URL', 'https://app.wpseoboss.com');
@@ -21,6 +23,15 @@ require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-detector.php';
 require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-writer.php';
 require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-api.php';
 require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-admin.php';
+
+// Auto-update via GitHub releases
+require_once WPSEOBOSS_PLUGIN_DIR . 'vendor/plugin-update-checker/plugin-update-checker.php';
+$wpseoboss_updater = YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+    'https://github.com/cbarnes360/wpseoboss-plugin/',
+    __FILE__,
+    'wpseoboss-connector'
+);
+$wpseoboss_updater->setBranch('main');
 
 register_activation_hook(__FILE__, 'wpseoboss_activate');
 add_action('rest_api_init', ['WPSeoBoss_API', 'register_routes']);
