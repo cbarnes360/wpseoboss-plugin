@@ -3,7 +3,7 @@
  * Plugin Name:       WPSeoBoss Connector
  * Plugin URI:        https://wpseoboss.com
  * Description:       Connects your WordPress site to WPSeoBoss for AI-powered SEO fix write-back.
- * Version:           1.2.1
+ * Version:           1.2.2
  * Author:            WPSeoBoss
  * Author URI:        https://wpseoboss.com
  * License:           GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined('ABSPATH') || exit;
 
-define('WPSEOBOSS_VERSION', '1.2.1');
+define('WPSEOBOSS_VERSION', '1.2.2');
 define('WPSEOBOSS_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WPSEOBOSS_OPTION_KEY', 'wpseoboss_api_key');
 define('WPSEOBOSS_APP_URL', 'https://app.wpseoboss.com');
@@ -29,6 +29,22 @@ add_action('rest_api_init', ['WPSeoBoss_API', 'register_routes']);
 add_action('admin_menu', ['WPSeoBoss_Admin', 'add_menu']);
 add_action('admin_init', ['WPSeoBoss_Admin', 'register_settings']);
 add_action('init', 'wpseoboss_register_updater');
+
+// Allow wpseoboss/v1 requests through security plugins that block unauthenticated REST API access.
+// Our endpoints do their own key-based authentication via verify_api_key().
+add_filter('rest_authentication_errors', 'wpseoboss_allow_rest_access', 999);
+
+function wpseoboss_allow_rest_access( $result ) {
+    if ( ! empty( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
+        $route = $GLOBALS['wp']->query_vars['rest_route'];
+    } else {
+        $route = isset( $_SERVER['REQUEST_URI'] ) ? $_SERVER['REQUEST_URI'] : '';
+    }
+    if ( strpos( $route, '/wpseoboss/v1/' ) !== false || strpos( $route, '/wpseoboss/v1' ) !== false ) {
+        return null; // Clear any authentication error — our permission callback handles auth
+    }
+    return $result;
+}
 
 function wpseoboss_register_updater() {
     if ( ! is_admin() ) return;
