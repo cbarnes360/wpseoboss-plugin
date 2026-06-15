@@ -38,7 +38,9 @@ class WPSeoBoss_API {
     }
 
     public static function verify_api_key(\WP_REST_Request $request): bool {
-        $provided = $request->get_header('X-WPSeoBoss-Key');
+        // Accept key via header (preferred) or query param (fallback for WAF-restricted hosts)
+        $provided = $request->get_header('X-WPSeoBoss-Key')
+                 ?: $request->get_param('key');
         $stored   = get_option(WPSEOBOSS_OPTION_KEY);
         return $provided && hash_equals((string) $stored, (string) $provided);
     }
