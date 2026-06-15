@@ -3,7 +3,7 @@
  * Plugin Name:       WPSeoBoss Connector
  * Plugin URI:        https://wpseoboss.com
  * Description:       Connects your WordPress site to WPSeoBoss for AI-powered SEO fix write-back.
- * Version:           1.2.3
+ * Version:           1.2.4
  * Author:            WPSeoBoss
  * Author URI:        https://wpseoboss.com
  * License:           GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined('ABSPATH') || exit;
 
-define('WPSEOBOSS_VERSION', '1.2.3');
+define('WPSEOBOSS_VERSION', '1.2.4');
 define('WPSEOBOSS_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WPSEOBOSS_OPTION_KEY', 'wpseoboss_api_key');
 define('WPSEOBOSS_APP_URL', 'https://app.wpseoboss.com');
@@ -26,6 +26,7 @@ require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-admin.php';
 
 register_activation_hook(__FILE__, 'wpseoboss_activate');
 add_action('rest_api_init', ['WPSeoBoss_API', 'register_routes']);
+add_action('init', 'wpseoboss_handle_direct_request');
 add_action('admin_menu', ['WPSeoBoss_Admin', 'add_menu']);
 add_action('admin_init', ['WPSeoBoss_Admin', 'register_settings']);
 add_action('init', 'wpseoboss_register_updater');
@@ -57,6 +58,27 @@ function wpseoboss_register_updater() {
         'wpseoboss-connector'
     );
     $updater->setBranch('main');
+}
+
+// Direct non-REST endpoint — bypasses WAFs that block /wp-json/ entirely.
+// Triggered by /?wpseoboss_action=status&key=xxx on any page URL.
+function wpseoboss_handle_direct_request() {
+    if ( empty( $_GET['wpseoboss_action'] ) ) return;
+
+    $provided = isset( $_GET['key'] ) ? sanitize_text_field( wp_unslash( $_GET['key'] ) ) : '';
+    $stored   = (string) get_option( WPSEOBOSS_OPTION_KEY, '' );
+
+    if ( ! $provided || ! hash_equals( $stored, $provided ) ) {
+        wp_send_json( [ 'error' => 'Invalid API key' ], 401 );
+    }
+
+    $action = sanitize_text_field( $_GET['wpseoboss_action'] );
+
+    if ( $action === 'status' ) {
+        wp_send_json( [ 'connected' => true, 'info' => WPSeoBoss_Detector::get_site_info() ] );
+    }
+
+    wp_send_json( [ 'error' => 'Unknown action' ], 400 );
 }
 
 function wpseoboss_activate() {
