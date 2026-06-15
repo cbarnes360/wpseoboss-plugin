@@ -3,7 +3,7 @@
  * Plugin Name:       WPSeoBoss Connector
  * Plugin URI:        https://wpseoboss.com
  * Description:       Connects your WordPress site to WPSeoBoss for AI-powered SEO fix write-back.
- * Version:           1.2.0
+ * Version:           1.2.1
  * Author:            WPSeoBoss
  * Author URI:        https://wpseoboss.com
  * License:           GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined('ABSPATH') || exit;
 
-define('WPSEOBOSS_VERSION', '1.2.0');
+define('WPSEOBOSS_VERSION', '1.2.1');
 define('WPSEOBOSS_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WPSEOBOSS_OPTION_KEY', 'wpseoboss_api_key');
 define('WPSEOBOSS_APP_URL', 'https://app.wpseoboss.com');
@@ -24,19 +24,24 @@ require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-writer.php';
 require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-api.php';
 require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-admin.php';
 
-// Auto-update via GitHub releases
-require_once WPSEOBOSS_PLUGIN_DIR . 'vendor/plugin-update-checker/plugin-update-checker.php';
-$wpseoboss_updater = YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
-    'https://github.com/cbarnes360/wpseoboss-plugin/',
-    __FILE__,
-    'wpseoboss-connector'
-);
-$wpseoboss_updater->setBranch('main');
-
 register_activation_hook(__FILE__, 'wpseoboss_activate');
 add_action('rest_api_init', ['WPSeoBoss_API', 'register_routes']);
 add_action('admin_menu', ['WPSeoBoss_Admin', 'add_menu']);
 add_action('admin_init', ['WPSeoBoss_Admin', 'register_settings']);
+add_action('init', 'wpseoboss_register_updater');
+
+function wpseoboss_register_updater() {
+    if ( ! is_admin() ) return;
+    $checker = WPSEOBOSS_PLUGIN_DIR . 'vendor/plugin-update-checker/plugin-update-checker.php';
+    if ( ! file_exists( $checker ) ) return;
+    require_once $checker;
+    $updater = YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+        'https://github.com/cbarnes360/wpseoboss-plugin/',
+        __FILE__,
+        'wpseoboss-connector'
+    );
+    $updater->setBranch('main');
+}
 
 function wpseoboss_activate() {
     // Generate a unique API key for this site on activation
