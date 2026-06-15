@@ -3,7 +3,7 @@
  * Plugin Name:       WPSeoBoss Connector
  * Plugin URI:        https://wpseoboss.com
  * Description:       Connects your WordPress site to WPSeoBoss for AI-powered SEO fix write-back.
- * Version:           1.2.5
+ * Version:           1.3.0
  * Author:            WPSeoBoss
  * Author URI:        https://wpseoboss.com
  * License:           GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined('ABSPATH') || exit;
 
-define('WPSEOBOSS_VERSION', '1.2.5');
+define('WPSEOBOSS_VERSION', '1.3.0');
 define('WPSEOBOSS_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WPSEOBOSS_OPTION_KEY', 'wpseoboss_api_key');
 define('WPSEOBOSS_APP_URL', 'https://app.wpseoboss.com');
@@ -23,8 +23,10 @@ require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-detector.php';
 require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-writer.php';
 require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-api.php';
 require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-admin.php';
+require_once WPSEOBOSS_PLUGIN_DIR . 'includes/class-tasks.php';
 
 register_activation_hook(__FILE__, 'wpseoboss_activate');
+register_deactivation_hook(__FILE__, 'wpseoboss_deactivate');
 add_action('rest_api_init', ['WPSeoBoss_API', 'register_routes']);
 add_action('init', 'wpseoboss_handle_direct_request');
 add_action('wp_ajax_nopriv_wpseoboss_status', 'wpseoboss_ajax_status');
@@ -32,6 +34,20 @@ add_action('wp_ajax_wpseoboss_status', 'wpseoboss_ajax_status');
 add_action('admin_menu', ['WPSeoBoss_Admin', 'add_menu']);
 add_action('admin_init', ['WPSeoBoss_Admin', 'register_settings']);
 add_action('init', 'wpseoboss_register_updater');
+
+// Push registration: fires on every admin page load (catches the settings page visit)
+add_action('admin_init', function() {
+    if ( get_option( WPSEOBOSS_OPTION_KEY ) ) {
+        WPSeoBoss_Tasks::register();
+    }
+});
+
+// Cron: register + poll every minute
+add_filter('cron_schedules', function( $schedules ) {
+    $schedules['wpseoboss_every_minute'] = [ 'interval' => 60, 'display' => 'Every Minute (WPSeoBoss)' ];
+    return $schedules;
+});
+add_action('wpseoboss_task_cron', ['WPSeoBoss_Tasks', 'run_cron']);
 
 // Allow wpseoboss/v1 requests through security plugins that block unauthenticated REST API access.
 // Our endpoints do their own key-based authentication via verify_api_key().
@@ -94,8 +110,14 @@ function wpseoboss_handle_direct_request() {
 }
 
 function wpseoboss_activate() {
-    // Generate a unique API key for this site on activation
-    if (!get_option(WPSEOBOSS_OPTION_KEY)) {
-        update_option(WPSEOBOSS_OPTION_KEY, wp_generate_password(32, false));
+    if ( ! get_option( WPSEOBOSS_OPTION_KEY ) ) {
+        update_option( WPSEOBOSS_OPTION_KEY, wp_generate_password( 32, false ) );
     }
+    WPSeoBoss_Tasks::schedule_cron();
+    // Register immediately on activation (non-blocking)
+    WPSeoBoss_Tasks::register();
+}
+
+function wpseoboss_deactivate() {
+    WPSeoBoss_Tasks::clear_cron();
 }

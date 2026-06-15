@@ -83,6 +83,11 @@ class WPSeoBoss_API {
         ], 200);
     }
 
+    // Public alias used by WPSeoBoss_Tasks for scan task execution
+    public static function format_post_public(\WP_Post $post, string $seo_plugin): array {
+        return self::format_post($post, $seo_plugin);
+    }
+
     private static function format_post(\WP_Post $post, string $seo_plugin): array {
         // Build yoast_head_json-compatible shape for all supported SEO plugins
         $seo_title = '';
@@ -136,6 +141,60 @@ class WPSeoBoss_API {
             ];
         }
         return new \WP_REST_Response($data, 200);
+    }
+
+    /** Used by WPSeoBoss_Tasks to execute publish tasks from the task queue. */
+    public static function publish_from_payload( array $params ): array {
+        $title          = sanitize_text_field($params['title']          ?? '');
+        $content        = wp_kses_post($params['content']               ?? '');
+        $status         = in_array($params['status'] ?? 'draft', ['publish', 'draft', 'pending']) ? $params['status'] : 'draft';
+        $category_ids   = array_map('intval', $params['category_ids']   ?? []);
+        $meta_title     = sanitize_text_field($params['meta_title']     ?? '');
+        $meta_desc      = sanitize_textarea_field($params['meta_description'] ?? '');
+        $focus_keyword  = sanitize_text_field($params['focus_keyword']  ?? '');
+        $featured_image = $params['featured_image']                     ?? '';
+        $img_filename   = sanitize_file_name($params['featured_image_filename'] ?? 'featured-image.jpg');
+
+        if (!$title) return ['error' => 'title is required'];
+
+        $featured_media_id = 0;
+        if ($featured_image && preg_match('/^data:(image\/[a-z+]+);base64,(.+)$/i', $featured_image, $m)) {
+            $image_data = base64_decode($m[2]);
+            if ($image_data) {
+                $upload = wp_upload_bits($img_filename, null, $image_data);
+                if (!$upload['error']) {
+                    $att_id = wp_insert_attachment(['post_mime_type' => $m[1], 'post_title' => sanitize_file_name($img_filename), 'post_status' => 'inherit'], $upload['file']);
+                    if ($att_id && !is_wp_error($att_id)) {
+                        require_once ABSPATH . 'wp-admin/includes/image.php';
+                        wp_update_attachment_metadata($att_id, wp_generate_attachment_metadata($att_id, $upload['file']));
+                        $featured_media_id = $att_id;
+                    }
+                }
+            }
+        }
+
+        $post_data = ['post_title' => $title, 'post_content' => $content, 'post_status' => $status, 'post_type' => 'post', 'post_category' => $category_ids ?: []];
+        if ($featured_media_id) $post_data['meta_input'] = ['_thumbnail_id' => $featured_media_id];
+
+        $post_id = wp_insert_post($post_data, true);
+        if (is_wp_error($post_id)) return ['error' => $post_id->get_error_message()];
+        if ($featured_media_id) set_post_thumbnail($post_id, $featured_media_id);
+
+        $seo_plugin = WPSeoBoss_Detector::detect_seo_plugin();
+        if ($seo_plugin === 'yoast') {
+            if ($meta_title)    update_post_meta($post_id, '_yoast_wpseo_title', $meta_title);
+            if ($meta_desc)     update_post_meta($post_id, '_yoast_wpseo_metadesc', $meta_desc);
+            if ($focus_keyword) update_post_meta($post_id, '_yoast_wpseo_focuskw', $focus_keyword);
+        } elseif ($seo_plugin === 'rankmath') {
+            if ($meta_title)    update_post_meta($post_id, 'rank_math_title', $meta_title);
+            if ($meta_desc)     update_post_meta($post_id, 'rank_math_description', $meta_desc);
+            if ($focus_keyword) update_post_meta($post_id, 'rank_math_focus_keyword', $focus_keyword);
+        } elseif ($seo_plugin === 'aioseo') {
+            if ($meta_title) update_post_meta($post_id, '_aioseo_title', $meta_title);
+            if ($meta_desc)  update_post_meta($post_id, '_aioseo_description', $meta_desc);
+        }
+
+        return ['success' => true, 'id' => $post_id, 'link' => get_permalink($post_id)];
     }
 
     // POST /wpseoboss/v1/publish
