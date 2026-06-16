@@ -54,7 +54,20 @@ class WPSeoBoss_Tasks {
 
     // ── Task polling ─────────────────────────────────────────────────────────────
 
-    private static function poll_and_execute(): void {
+    /**
+     * Finishes the HTTP response (if FastCGI) then polls and executes any pending tasks.
+     * Safe to call from a shutdown function — won't block admin page loads on PHP-FPM hosts.
+     */
+    public static function run_pending_background(): void {
+        if ( function_exists( 'fastcgi_finish_request' ) ) {
+            fastcgi_finish_request();
+        } elseif ( function_exists( 'litespeed_finish_request' ) ) {
+            litespeed_finish_request();
+        }
+        self::poll_and_execute();
+    }
+
+    public static function poll_and_execute(): void {
         $key = get_option( WPSEOBOSS_OPTION_KEY, '' );
         if ( ! $key ) return;
 
