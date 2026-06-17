@@ -3,7 +3,7 @@
  * Plugin Name:       WPSeoBoss Connector
  * Plugin URI:        https://wpseoboss.com
  * Description:       Connects your WordPress site to WPSeoBoss for AI-powered SEO fix write-back.
- * Version:           1.3.3
+ * Version:           1.3.4
  * Author:            WPSeoBoss
  * Author URI:        https://wpseoboss.com
  * License:           GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined('ABSPATH') || exit;
 
-define('WPSEOBOSS_VERSION', '1.3.3');
+define('WPSEOBOSS_VERSION', '1.3.4');
 define('WPSEOBOSS_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WPSEOBOSS_OPTION_KEY', 'wpseoboss_api_key');
 define('WPSEOBOSS_APP_URL', 'https://app.wpseoboss.com');
@@ -80,8 +80,9 @@ function wpseoboss_register_updater() {
         __FILE__,
         'wpseoboss-connector'
     );
-    // Use GitHub Releases + our pre-built zip asset instead of branch tracking.
-    // Release-based updates are immediate and reliable — no branch transient caching.
+    // setBranch('main') activates STRATEGY_LATEST_RELEASE in PUC — without it, PUC
+    // only uses STRATEGY_BRANCH and never calls getLatestRelease() to detect new versions.
+    $updater->setBranch( 'main' );
     $updater->getVcsApi()->enableReleaseAssets();
 }
 
