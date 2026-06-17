@@ -251,15 +251,33 @@ class WPSeoBoss_Tasks {
     // ── Helpers ──────────────────────────────────────────────────────────────────
 
     private static function complete_task( string $task_id, string $key, array $result ): void {
-        wp_remote_post(
-            self::APP_URL . '/api/plugin/tasks/' . rawurlencode( $task_id ) . '/done?key=' . rawurlencode( $key ),
-            [
-                'body'      => wp_json_encode( [ 'result' => $result ] ),
+        $url  = self::APP_URL . '/api/plugin/tasks/' . rawurlencode( $task_id ) . '/done?key=' . rawurlencode( $key );
+        // JSON_PARTIAL_OUTPUT_ON_ERROR + JSON_INVALID_UTF8_SUBSTITUTE prevent false on bad content
+        $body = (string) json_encode( [ 'result' => $result ], JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE );
+
+        // Use raw cURL — bypasses wp_remote_post() and all pre_http_request filters.
+        // Security plugins (AIOSEO, Wordfence, etc.) hook pre_http_request and can kill
+        // the process when they see a large outbound POST body via the WP HTTP API.
+        if ( function_exists( 'curl_init' ) ) {
+            $ch = curl_init( $url );
+            curl_setopt_array( $ch, [
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $body,
+                CURLOPT_HTTPHEADER     => [ 'Content-Type: application/json', 'Content-Length: ' . strlen( $body ) ],
+                CURLOPT_TIMEOUT        => 30,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_SSL_VERIFYPEER => true,
+            ] );
+            curl_exec( $ch );
+            curl_close( $ch );
+        } else {
+            wp_remote_post( $url, [
+                'body'      => $body,
                 'headers'   => [ 'Content-Type' => 'application/json' ],
                 'timeout'   => 30,
                 'sslverify' => true,
-            ]
-        );
+            ] );
+        }
     }
 
     private static function fail_task( string $task_id, string $key, string $error ): void {
