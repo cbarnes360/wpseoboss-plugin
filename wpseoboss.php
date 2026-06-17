@@ -3,7 +3,7 @@
  * Plugin Name:       WPSeoBoss Connector
  * Plugin URI:        https://wpseoboss.com
  * Description:       Connects your WordPress site to WPSeoBoss for AI-powered SEO fix write-back.
- * Version:           1.3.7
+ * Version:           1.3.8
  * Author:            WPSeoBoss
  * Author URI:        https://wpseoboss.com
  * License:           GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined('ABSPATH') || exit;
 
-define('WPSEOBOSS_VERSION', '1.3.7');
+define('WPSEOBOSS_VERSION', '1.3.8');
 define('WPSEOBOSS_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WPSEOBOSS_OPTION_KEY', 'wpseoboss_api_key');
 define('WPSEOBOSS_APP_URL', 'https://app.wpseoboss.com');
@@ -53,6 +53,31 @@ add_filter('cron_schedules', function( $schedules ) {
     return $schedules;
 });
 add_action('wpseoboss_task_cron', ['WPSeoBoss_Tasks', 'run_cron']);
+
+// WPEngine copies the source directory INTO the destination instead of replacing it, which
+// creates wpseoboss-connector/wpseoboss-connector/ double-nesting on every update.
+// This filter runs after each update (plugin is active, so the filter is registered) and
+// flattens the structure back to wpseoboss-connector/wpseoboss.php.
+add_filter('upgrader_post_install', 'wpseoboss_fix_wpengine_nesting', 10, 3);
+function wpseoboss_fix_wpengine_nesting( $response, $hook_extra, $result ) {
+    if ( is_wp_error( $response ) ) return $response;
+    if ( empty( $hook_extra['plugin'] ) || strpos( $hook_extra['plugin'], 'wpseoboss-connector' ) === false ) {
+        return $response;
+    }
+    $dest  = trailingslashit( $result['destination'] ?? '' );
+    $inner = rtrim( $dest, '/\\' ) . DIRECTORY_SEPARATOR . 'wpseoboss-connector';
+    if ( ! is_dir( $inner ) || ! file_exists( $inner . DIRECTORY_SEPARATOR . 'wpseoboss.php' ) ) {
+        return $response;
+    }
+    $files = @scandir( $inner );
+    if ( ! $files ) return $response;
+    foreach ( $files as $file ) {
+        if ( $file === '.' || $file === '..' ) continue;
+        @rename( $inner . DIRECTORY_SEPARATOR . $file, $dest . $file );
+    }
+    @rmdir( $inner );
+    return $response;
+}
 
 // Allow wpseoboss/v1 requests through security plugins that block unauthenticated REST API access.
 // Our endpoints do their own key-based authentication via verify_api_key().
