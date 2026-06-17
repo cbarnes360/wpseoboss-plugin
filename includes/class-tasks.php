@@ -149,6 +149,17 @@ class WPSeoBoss_Tasks {
 
             foreach ( $rows as $row ) {
                 $formatted = WPSeoBoss_API::format_post_public( new WP_Post( $row ), $seo_plugin );
+
+                // get_the_excerpt() calls apply_filters('the_content') when post_excerpt is
+                // empty, which triggers Elementor/Divi to render the full page — catastrophic
+                // for 100+ posts in a background process. Use the raw DB field instead, with a
+                // filter-free trim of post_content as the only fallback.
+                $raw_excerpt = trim( $row->post_excerpt ?? '' );
+                if ( ! $raw_excerpt ) {
+                    $raw_excerpt = wp_trim_words( wp_strip_all_tags( $row->post_content ?? '' ), 55, '...' );
+                }
+                $formatted['excerpt']['rendered'] = $raw_excerpt;
+
                 // Elementor/Divi store layout JSON in post_content — can be 50-200KB per post.
                 // Cap at 10k chars so payloads stay bounded across all hosting environments.
                 if ( strlen( $formatted['content']['rendered'] ?? '' ) > 10000 ) {
