@@ -324,6 +324,11 @@ class WPSeoBoss_Tasks {
                 'errmsg'    => $errmsg,
                 'resp_len'  => is_string( $response ) ? strlen( $response ) : -1,
             ] );
+            // If server rejected the body (4xx/5xx), call /fail so the task surface an error
+            // instead of silently staying 'running' forever.
+            if ( $http_code < 200 || $http_code >= 300 ) {
+                self::fail_task( $task_id, $key, 'done endpoint returned HTTP ' . $http_code . ' (curl_errno=' . $errno . ')' );
+            }
         } else {
             self::diag( 'curl_unavailable_using_wp_remote' );
             wp_remote_post( $url, [
