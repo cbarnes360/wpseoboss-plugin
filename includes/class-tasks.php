@@ -111,31 +111,48 @@ class WPSeoBoss_Tasks {
     // ── Task execution ────────────────────────────────────────────────────────────
 
     private static function execute_scan( string $task_id, string $key ): void {
-        $seo_plugin = WPSeoBoss_Detector::detect_seo_plugin();
-        $page       = 1;
+        global $wpdb;
 
-        // Chunked mode: send each batch of 50 posts immediately rather than
-        // accumulating everything in memory. Each POST is small and fast,
-        // so PHP execution time limits and memory limits are never a concern.
+        $seo_plugin = WPSeoBoss_Detector::detect_seo_plugin();
+        $per_page   = 50;
+        $page       = 1;
+        $max_pages  = null;
+
+        // Direct $wpdb query bypasses WP_Query and all pre_get_posts filters.
+        // AIOSEO / Elementor register filters that return 0 results in admin-ajax
+        // context; going directly to the database avoids them entirely.
         do {
-            $query = new WP_Query( [
-                'post_type'              => [ 'post', 'page' ],
-                'post_status'            => 'publish',
-                'posts_per_page'         => 50,
-                'paged'                  => $page,
-                'orderby'                => 'date',
-                'order'                  => 'DESC',
-                'update_post_meta_cache' => true,  // batch-loads all post meta in 1 query
-                'update_post_term_cache' => false, // skip term data — not needed for scan
-            ] );
+            $offset = ( $page - 1 ) * $per_page;
+            $rows   = $wpdb->get_results( $wpdb->prepare(
+                "SELECT ID, post_title, post_content, post_excerpt, post_type,
+                        post_status, post_parent, post_date, guid
+                 FROM {$wpdb->posts}
+                 WHERE post_status = 'publish' AND post_type IN ('post', 'page')
+                 ORDER BY post_date DESC
+                 LIMIT %d OFFSET %d",
+                $per_page, $offset
+            ) );
+
+            if ( $page === 1 ) {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+                $total     = (int) $wpdb->get_var(
+                    "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_status = 'publish' AND post_type IN ('post', 'page')"
+                );
+                $max_pages = max( 1, (int) ceil( $total / $per_page ) );
+            }
+
+            if ( empty( $rows ) ) break;
+
+            // Batch-load all post meta for this page in one query (same as update_post_meta_cache)
+            $ids = array_map( 'intval', wp_list_pluck( $rows, 'ID' ) );
+            update_meta_cache( 'post', $ids );
+
             $batch = [];
-            foreach ( $query->posts as $post ) {
-                $batch[] = WPSeoBoss_API::format_post_public( $post, $seo_plugin );
+            foreach ( $rows as $row ) {
+                $batch[] = WPSeoBoss_API::format_post_public( new WP_Post( $row ), $seo_plugin );
             }
-            if ( ! empty( $batch ) ) {
-                self::post_batch( $task_id, $key, $batch );
-            }
-            $max_pages = (int) $query->max_num_pages;
+            self::post_batch( $task_id, $key, $batch );
+
             $page++;
         } while ( $page <= $max_pages );
 
