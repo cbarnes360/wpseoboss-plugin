@@ -145,27 +145,58 @@ class WPSeoBoss_Tasks {
             if ( empty( $rows ) ) break;
 
             // Batch-load all post meta for this page in one query
-            update_meta_cache( 'post', array_map( 'intval', wp_list_pluck( $rows, 'ID' ) ) );
+            $ids = array_map( 'intval', wp_list_pluck( $rows, 'ID' ) );
+            update_meta_cache( 'post', $ids );
 
             foreach ( $rows as $row ) {
-                $formatted = WPSeoBoss_API::format_post_public( new WP_Post( $row ), $seo_plugin );
-
-                // get_the_excerpt() calls apply_filters('the_content') when post_excerpt is
-                // empty, which triggers Elementor/Divi to render the full page — catastrophic
-                // for 100+ posts in a background process. Use the raw DB field instead, with a
-                // filter-free trim of post_content as the only fallback.
-                $raw_excerpt = trim( $row->post_excerpt ?? '' );
-                if ( ! $raw_excerpt ) {
-                    $raw_excerpt = wp_trim_words( wp_strip_all_tags( $row->post_content ?? '' ), 55, '...' );
+                // Build the record directly from DB values — no WordPress filter calls.
+                // format_post_public() calls get_permalink() (hierarchy DB queries) and
+                // get_the_excerpt() (Elementor full-page render) — both are catastrophically
+                // slow for 100+ posts in a background process.
+                $seo_title = '';
+                $seo_desc  = '';
+                $focus_kw  = '';
+                if ( $seo_plugin === 'yoast' ) {
+                    $seo_title = (string) get_post_meta( (int) $row->ID, '_yoast_wpseo_title', true );
+                    $seo_desc  = (string) get_post_meta( (int) $row->ID, '_yoast_wpseo_metadesc', true );
+                    $focus_kw  = (string) get_post_meta( (int) $row->ID, '_yoast_wpseo_focuskw', true );
+                } elseif ( $seo_plugin === 'rankmath' ) {
+                    $seo_title = (string) get_post_meta( (int) $row->ID, 'rank_math_title', true );
+                    $seo_desc  = (string) get_post_meta( (int) $row->ID, 'rank_math_description', true );
+                    $focus_kw  = (string) get_post_meta( (int) $row->ID, 'rank_math_focus_keyword', true );
+                } elseif ( $seo_plugin === 'aioseo' ) {
+                    $seo_title = (string) get_post_meta( (int) $row->ID, '_aioseo_title', true );
+                    $seo_desc  = (string) get_post_meta( (int) $row->ID, '_aioseo_description', true );
                 }
-                $formatted['excerpt']['rendered'] = $raw_excerpt;
 
-                // Elementor/Divi store layout JSON in post_content — can be 50-200KB per post.
-                // Cap at 10k chars so payloads stay bounded across all hosting environments.
-                if ( strlen( $formatted['content']['rendered'] ?? '' ) > 10000 ) {
-                    $formatted['content']['rendered'] = substr( $formatted['content']['rendered'], 0, 10000 );
+                // Excerpt: raw field first; fallback strips tags on first 5k chars only
+                // (avoids slow regex on 200KB Elementor/Divi JSON strings)
+                $excerpt = trim( $row->post_excerpt ?? '' );
+                if ( ! $excerpt && ! empty( $row->post_content ) ) {
+                    $excerpt = wp_trim_words( wp_strip_all_tags( substr( $row->post_content, 0, 5000 ) ), 55, '...' );
                 }
-                $all_posts[] = $formatted;
+
+                // Content: cap at 10k chars (Elementor JSON can be 50-200KB)
+                $content = $row->post_content ?? '';
+                if ( strlen( $content ) > 10000 ) {
+                    $content = substr( $content, 0, 10000 );
+                }
+
+                $all_posts[] = [
+                    'id'     => (int) $row->ID,
+                    'link'   => $row->guid,  // guid avoids get_permalink() hierarchy queries
+                    'title'  => [ 'rendered' => html_entity_decode( $row->post_title ?? '', ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ],
+                    'excerpt' => [ 'rendered' => $excerpt ],
+                    'content' => [ 'rendered' => $content ],
+                    'parent'  => (int) $row->post_parent,
+                    'type'    => $row->post_type,
+                    'status'  => $row->post_status,
+                    'yoast_head_json' => [
+                        'title'       => $seo_title ?: null,
+                        'description' => $seo_desc  ?: null,
+                        'focuskw'     => $focus_kw  ?: null,
+                    ],
+                ];
             }
 
             $page++;
