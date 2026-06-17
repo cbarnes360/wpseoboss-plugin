@@ -176,10 +176,11 @@ class WPSeoBoss_Tasks {
                     $excerpt = wp_trim_words( wp_strip_all_tags( substr( $row->post_content, 0, 5000 ) ), 55, '...' );
                 }
 
-                // Content: cap at 10k chars (Elementor JSON can be 50-200KB)
+                // Content: cap at 500 chars for scan payload — keeps total POST body
+                // under 100KB regardless of site size or page builder used
                 $content = $row->post_content ?? '';
-                if ( strlen( $content ) > 10000 ) {
-                    $content = substr( $content, 0, 10000 );
+                if ( strlen( $content ) > 500 ) {
+                    $content = substr( $content, 0, 500 );
                 }
 
                 $all_posts[] = [
