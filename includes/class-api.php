@@ -49,6 +49,7 @@ class WPSeoBoss_API {
         return new \WP_REST_Response([
             'connected' => true,
             'info'      => WPSeoBoss_Detector::get_site_info(),
+            'scan_diag' => get_option( 'wpseoboss_scan_diag', null ),
         ], 200);
     }
 

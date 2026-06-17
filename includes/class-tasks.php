@@ -110,21 +110,32 @@ class WPSeoBoss_Tasks {
 
     // ── Task execution ────────────────────────────────────────────────────────────
 
+    private static function diag( string $step, array $extra = [] ): void {
+        update_option( 'wpseoboss_scan_diag', array_merge( [ 'step' => $step, 'ts' => time(), 'mem' => memory_get_usage(true) ], $extra ), false );
+    }
+
     private static function execute_scan( string $task_id, string $key ): void {
         global $wpdb;
 
-        $seo_plugin = WPSeoBoss_Detector::detect_seo_plugin();
-        $per_page   = 50;
-        $page       = 1;
-        $max_pages  = null;
-        $all_posts  = [];
+        self::diag( 'started', [ 'task_id' => $task_id ] );
 
-        // Direct $wpdb query bypasses WP_Query and all pre_get_posts filters.
-        // AIOSEO / Elementor register filters that suppress queries in admin-ajax
-        // context; going to the DB directly avoids them entirely.
+        $seo_plugin = WPSeoBoss_Detector::detect_seo_plugin();
+
+        self::diag( 'seo_plugin_detected', [ 'seo_plugin' => $seo_plugin ] );
+
+        $per_page  = 50;
+        $page      = 1;
+        $max_pages = null;
+        $all_posts = [];
+
+        // Direct $wpdb queries for everything — bypasses WP_Query, pre_get_posts,
+        // get_post_metadata, and all other WordPress filters. No WP function calls
+        // in the inner loop; no filter can intercept or kill the PHP process here.
         do {
             $offset = ( $page - 1 ) * $per_page;
-            $rows   = $wpdb->get_results( $wpdb->prepare(
+
+            // phpcs:disable WordPress.DB.DirectDatabaseQuery
+            $rows = $wpdb->get_results( $wpdb->prepare(
                 "SELECT ID, post_title, post_content, post_excerpt, post_type,
                         post_status, post_parent, post_date, guid
                  FROM {$wpdb->posts}
@@ -135,58 +146,84 @@ class WPSeoBoss_Tasks {
             ) );
 
             if ( $page === 1 ) {
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery
                 $total     = (int) $wpdb->get_var(
                     "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_status = 'publish' AND post_type IN ('post', 'page')"
                 );
                 $max_pages = max( 1, (int) ceil( $total / $per_page ) );
+                self::diag( 'page_1_queried', [ 'total' => $total, 'max_pages' => $max_pages, 'rows_got' => count( $rows ) ] );
             }
+            // phpcs:enable WordPress.DB.DirectDatabaseQuery
 
             if ( empty( $rows ) ) break;
 
-            // Batch-load all post meta for this page in one query
-            $ids = array_map( 'intval', wp_list_pluck( $rows, 'ID' ) );
-            update_meta_cache( 'post', $ids );
+            // Build post ID list for the batch meta query
+            $ids         = [];
+            $rows_by_id  = [];
+            foreach ( $rows as $row ) {
+                $ids[]              = (int) $row->ID;
+                $rows_by_id[ (int) $row->ID ] = $row;
+            }
+
+            // Fetch all needed SEO meta in ONE direct query per page — bypasses
+            // get_post_metadata filter (which AIOSEO hooks to compute dynamic values)
+            $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+            // phpcs:disable WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQLPlaceholders
+            $meta_rows = $wpdb->get_results( $wpdb->prepare(
+                "SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta}
+                 WHERE post_id IN ($placeholders)
+                 AND meta_key IN (
+                     '_aioseo_title','_aioseo_description',
+                     '_yoast_wpseo_title','_yoast_wpseo_metadesc','_yoast_wpseo_focuskw',
+                     'rank_math_title','rank_math_description','rank_math_focus_keyword'
+                 )",
+                ...$ids
+            ) );
+            // phpcs:enable WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQLPlaceholders
+
+            // Index meta by [post_id][meta_key]
+            $meta = [];
+            foreach ( $meta_rows as $mr ) {
+                $meta[ (int) $mr->post_id ][ $mr->meta_key ] = $mr->meta_value;
+            }
 
             foreach ( $rows as $row ) {
-                // Build the record directly from DB values — no WordPress filter calls.
-                // format_post_public() calls get_permalink() (hierarchy DB queries) and
-                // get_the_excerpt() (Elementor full-page render) — both are catastrophically
-                // slow for 100+ posts in a background process.
+                $pid = (int) $row->ID;
+                $pm  = $meta[ $pid ] ?? [];
+
                 $seo_title = '';
                 $seo_desc  = '';
                 $focus_kw  = '';
                 if ( $seo_plugin === 'yoast' ) {
-                    $seo_title = (string) get_post_meta( (int) $row->ID, '_yoast_wpseo_title', true );
-                    $seo_desc  = (string) get_post_meta( (int) $row->ID, '_yoast_wpseo_metadesc', true );
-                    $focus_kw  = (string) get_post_meta( (int) $row->ID, '_yoast_wpseo_focuskw', true );
+                    $seo_title = (string) ( $pm['_yoast_wpseo_title']   ?? '' );
+                    $seo_desc  = (string) ( $pm['_yoast_wpseo_metadesc'] ?? '' );
+                    $focus_kw  = (string) ( $pm['_yoast_wpseo_focuskw']  ?? '' );
                 } elseif ( $seo_plugin === 'rankmath' ) {
-                    $seo_title = (string) get_post_meta( (int) $row->ID, 'rank_math_title', true );
-                    $seo_desc  = (string) get_post_meta( (int) $row->ID, 'rank_math_description', true );
-                    $focus_kw  = (string) get_post_meta( (int) $row->ID, 'rank_math_focus_keyword', true );
+                    $seo_title = (string) ( $pm['rank_math_title']       ?? '' );
+                    $seo_desc  = (string) ( $pm['rank_math_description'] ?? '' );
+                    $focus_kw  = (string) ( $pm['rank_math_focus_keyword'] ?? '' );
                 } elseif ( $seo_plugin === 'aioseo' ) {
-                    $seo_title = (string) get_post_meta( (int) $row->ID, '_aioseo_title', true );
-                    $seo_desc  = (string) get_post_meta( (int) $row->ID, '_aioseo_description', true );
+                    $seo_title = (string) ( $pm['_aioseo_title']       ?? '' );
+                    $seo_desc  = (string) ( $pm['_aioseo_description'] ?? '' );
                 }
 
-                // Excerpt: raw field first; fallback strips tags on first 5k chars only
-                // (avoids slow regex on 200KB Elementor/Divi JSON strings)
+                // Excerpt: raw field first; fallback uses PHP-native string ops only
+                // (wp_trim_words hooks excerpt_length/excerpt_more — avoid filters)
                 $excerpt = trim( $row->post_excerpt ?? '' );
                 if ( ! $excerpt && ! empty( $row->post_content ) ) {
-                    $excerpt = wp_trim_words( wp_strip_all_tags( substr( $row->post_content, 0, 5000 ) ), 55, '...' );
+                    $stripped = strip_tags( substr( $row->post_content, 0, 5000 ) );
+                    $words    = preg_split( '/\s+/u', trim( $stripped ), 57 );
+                    $excerpt  = count( $words ) > 55
+                        ? implode( ' ', array_slice( $words, 0, 55 ) ) . '...'
+                        : implode( ' ', $words );
                 }
 
-                // Content: cap at 500 chars for scan payload — keeps total POST body
-                // under 100KB regardless of site size or page builder used
-                $content = $row->post_content ?? '';
-                if ( strlen( $content ) > 500 ) {
-                    $content = substr( $content, 0, 500 );
-                }
+                // Content capped to 500 chars — all we need for SEO analysis
+                $content = isset( $row->post_content ) ? substr( $row->post_content, 0, 500 ) : '';
 
                 $all_posts[] = [
-                    'id'     => (int) $row->ID,
-                    'link'   => $row->guid,  // guid avoids get_permalink() hierarchy queries
-                    'title'  => [ 'rendered' => html_entity_decode( $row->post_title ?? '', ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ],
+                    'id'      => $pid,
+                    'link'    => $row->guid,
+                    'title'   => [ 'rendered' => html_entity_decode( $row->post_title ?? '', ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ],
                     'excerpt' => [ 'rendered' => $excerpt ],
                     'content' => [ 'rendered' => $content ],
                     'parent'  => (int) $row->post_parent,
@@ -200,17 +237,22 @@ class WPSeoBoss_Tasks {
                 ];
             }
 
+            self::diag( 'page_done', [ 'page' => $page, 'accumulated' => count( $all_posts ) ] );
             $page++;
         } while ( $page <= $max_pages );
 
+        self::diag( 'loop_complete', [ 'total_posts' => count( $all_posts ) ] );
+
         if ( empty( $all_posts ) ) {
+            self::diag( 'failing_no_posts', [ 'db_err' => $wpdb->last_error ] );
             self::fail_task( $task_id, $key, 'No published posts/pages found (table=' . $wpdb->posts . ' db_err=' . ( $wpdb->last_error ?: 'none' ) . ')' );
             return;
         }
 
-        // Deliver everything in one done call — no intermediate /posts round trips.
-        // One outbound HTTP call is reliable across all WordPress hosting environments.
-        self::complete_task( $task_id, $key, [ 'posts' => $all_posts ] );
+        $body = (string) json_encode( [ 'result' => [ 'posts' => $all_posts ] ], JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE );
+        self::diag( 'json_encoded', [ 'body_bytes' => strlen( $body ), 'post_count' => count( $all_posts ) ] );
+
+        self::complete_task_raw( $task_id, $key, $body );
     }
 
     private static function execute_publish( string $task_id, array $payload, string $key ): void {
@@ -251,14 +293,17 @@ class WPSeoBoss_Tasks {
     // ── Helpers ──────────────────────────────────────────────────────────────────
 
     private static function complete_task( string $task_id, string $key, array $result ): void {
-        $url  = self::APP_URL . '/api/plugin/tasks/' . rawurlencode( $task_id ) . '/done?key=' . rawurlencode( $key );
-        // JSON_PARTIAL_OUTPUT_ON_ERROR + JSON_INVALID_UTF8_SUBSTITUTE prevent false on bad content
         $body = (string) json_encode( [ 'result' => $result ], JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE );
+        self::complete_task_raw( $task_id, $key, $body );
+    }
 
-        // Use raw cURL — bypasses wp_remote_post() and all pre_http_request filters.
-        // Security plugins (AIOSEO, Wordfence, etc.) hook pre_http_request and can kill
-        // the process when they see a large outbound POST body via the WP HTTP API.
+    private static function complete_task_raw( string $task_id, string $key, string $body ): void {
+        $url = self::APP_URL . '/api/plugin/tasks/' . rawurlencode( $task_id ) . '/done?key=' . rawurlencode( $key );
+
+        // Raw cURL bypasses wp_remote_post() and all pre_http_request filters so security
+        // plugins (AIOSEO, Wordfence) cannot intercept and kill the PHP process.
         if ( function_exists( 'curl_init' ) ) {
+            self::diag( 'curl_starting', [ 'url' => $url, 'body_bytes' => strlen( $body ) ] );
             $ch = curl_init( $url );
             curl_setopt_array( $ch, [
                 CURLOPT_POST           => true,
@@ -268,15 +313,26 @@ class WPSeoBoss_Tasks {
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_SSL_VERIFYPEER => true,
             ] );
-            curl_exec( $ch );
+            $response  = curl_exec( $ch );
+            $http_code = curl_getinfo( $ch, CURLINFO_HTTP_CODE );
+            $errno     = curl_errno( $ch );
+            $errmsg    = curl_error( $ch );
             curl_close( $ch );
+            self::diag( 'curl_done', [
+                'http_code' => $http_code,
+                'errno'     => $errno,
+                'errmsg'    => $errmsg,
+                'resp_len'  => is_string( $response ) ? strlen( $response ) : -1,
+            ] );
         } else {
+            self::diag( 'curl_unavailable_using_wp_remote' );
             wp_remote_post( $url, [
                 'body'      => $body,
                 'headers'   => [ 'Content-Type' => 'application/json' ],
                 'timeout'   => 30,
                 'sslverify' => true,
             ] );
+            self::diag( 'wp_remote_post_done' );
         }
     }
 
