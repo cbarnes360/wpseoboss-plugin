@@ -68,6 +68,9 @@ class WPSeoBoss_Tasks {
     }
 
     public static function poll_and_execute(): void {
+        // Running detached after fastcgi_finish_request — remove PHP time limit so long
+        // scans (200+ posts) can complete without being killed by the server's 60s default.
+        @set_time_limit( 0 );
         $key = get_option( WPSEOBOSS_OPTION_KEY, '' );
         if ( ! $key ) return;
 
@@ -114,12 +117,14 @@ class WPSeoBoss_Tasks {
 
         do {
             $query = new WP_Query( [
-                'post_type'      => [ 'post', 'page' ],
-                'post_status'    => 'publish',
-                'posts_per_page' => 50,
-                'paged'          => $page,
-                'orderby'        => 'date',
-                'order'          => 'DESC',
+                'post_type'              => [ 'post', 'page' ],
+                'post_status'            => 'publish',
+                'posts_per_page'         => 50,
+                'paged'                  => $page,
+                'orderby'                => 'date',
+                'order'                  => 'DESC',
+                'update_post_meta_cache' => true,  // batch-loads all post meta in 1 query
+                'update_post_term_cache' => false, // skip term data — not needed for scan
             ] );
             foreach ( $query->posts as $post ) {
                 $posts[] = WPSeoBoss_API::format_post_public( $post, $seo_plugin );
