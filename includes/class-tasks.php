@@ -113,12 +113,13 @@ class WPSeoBoss_Tasks {
     private static function execute_scan( string $task_id, string $key ): void {
         global $wpdb;
 
-        $seo_plugin  = WPSeoBoss_Detector::detect_seo_plugin();
-        $per_page    = 50;
-        $page        = 1;
-        $max_pages   = null;
-        $total_sent  = 0;
-        $diag        = [];
+        $seo_plugin   = WPSeoBoss_Detector::detect_seo_plugin();
+        $per_page     = 50;
+        $page         = 1;
+        $max_pages    = null;
+        $total_formatted = 0;
+        $batch_errors = [];
+        $diag         = [];
 
         // Direct $wpdb query bypasses WP_Query and all pre_get_posts filters.
         // AIOSEO / Elementor register filters that return 0 results in admin-ajax
@@ -143,8 +144,8 @@ class WPSeoBoss_Tasks {
                 $total     = (int) $wpdb->get_var(
                     "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_status = 'publish' AND post_type IN ('post', 'page')"
                 );
-                $diag['total']       = $total;
-                $diag['count_err']   = $wpdb->last_error ?: null;
+                $diag['total']     = $total;
+                $diag['count_err'] = $wpdb->last_error ?: null;
                 $max_pages = max( 1, (int) ceil( $total / $per_page ) );
             }
 
@@ -158,24 +159,33 @@ class WPSeoBoss_Tasks {
             foreach ( $rows as $row ) {
                 $batch[] = WPSeoBoss_API::format_post_public( new WP_Post( $row ), $seo_plugin );
             }
-            self::post_batch( $task_id, $key, $batch );
-            $total_sent += count( $batch );
+
+            $err = self::post_batch( $task_id, $key, $batch );
+            if ( $err !== null ) {
+                $batch_errors[] = 'p' . $page . ':' . $err;
+            }
+            $total_formatted += count( $batch );
 
             $page++;
         } while ( $page <= $max_pages );
 
-        if ( $total_sent === 0 ) {
-            // No posts sent — fail with diagnostics so we can see the root cause
+        if ( $total_formatted === 0 ) {
             self::fail_task( $task_id, $key, 'wpdb_zero diag=' . wp_json_encode( $diag ) );
             return;
         }
 
-        // Signal completion — server uses the accumulated batches for AI analysis
+        if ( ! empty( $batch_errors ) ) {
+            // post_batch calls returned errors — report them so we know the root cause
+            self::fail_task( $task_id, $key, 'post_batch_fail formatted=' . $total_formatted . ' errors=' . wp_json_encode( $batch_errors ) . ' diag=' . wp_json_encode( $diag ) );
+            return;
+        }
+
+        // All batches posted successfully — signal completion
         self::complete_task( $task_id, $key, [] );
     }
 
-    private static function post_batch( string $task_id, string $key, array $posts ): void {
-        wp_remote_post(
+    private static function post_batch( string $task_id, string $key, array $posts ): ?string {
+        $response = wp_remote_post(
             self::APP_URL . '/api/plugin/tasks/' . rawurlencode( $task_id ) . '/posts?key=' . rawurlencode( $key ),
             [
                 'body'      => wp_json_encode( [ 'posts' => $posts ] ),
@@ -184,6 +194,14 @@ class WPSeoBoss_Tasks {
                 'sslverify' => true,
             ]
         );
+        if ( is_wp_error( $response ) ) {
+            return 'wp_err:' . $response->get_error_message();
+        }
+        $code = (int) wp_remote_retrieve_response_code( $response );
+        if ( $code !== 200 ) {
+            return 'http_' . $code . ':' . substr( wp_remote_retrieve_body( $response ), 0, 300 );
+        }
+        return null;
     }
 
     private static function execute_publish( string $task_id, array $payload, string $key ): void {
