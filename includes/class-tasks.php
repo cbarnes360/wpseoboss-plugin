@@ -112,9 +112,11 @@ class WPSeoBoss_Tasks {
 
     private static function execute_scan( string $task_id, string $key ): void {
         $seo_plugin = WPSeoBoss_Detector::detect_seo_plugin();
-        $posts      = [];
         $page       = 1;
 
+        // Chunked mode: send each batch of 50 posts immediately rather than
+        // accumulating everything in memory. Each POST is small and fast,
+        // so PHP execution time limits and memory limits are never a concern.
         do {
             $query = new WP_Query( [
                 'post_type'              => [ 'post', 'page' ],
@@ -126,13 +128,31 @@ class WPSeoBoss_Tasks {
                 'update_post_meta_cache' => true,  // batch-loads all post meta in 1 query
                 'update_post_term_cache' => false, // skip term data — not needed for scan
             ] );
+            $batch = [];
             foreach ( $query->posts as $post ) {
-                $posts[] = WPSeoBoss_API::format_post_public( $post, $seo_plugin );
+                $batch[] = WPSeoBoss_API::format_post_public( $post, $seo_plugin );
             }
+            if ( ! empty( $batch ) ) {
+                self::post_batch( $task_id, $key, $batch );
+            }
+            $max_pages = (int) $query->max_num_pages;
             $page++;
-        } while ( $page <= $query->max_num_pages );
+        } while ( $page <= $max_pages );
 
-        self::complete_task( $task_id, $key, [ 'posts' => $posts ] );
+        // Signal completion — server uses the accumulated batches for AI analysis
+        self::complete_task( $task_id, $key, [] );
+    }
+
+    private static function post_batch( string $task_id, string $key, array $posts ): void {
+        wp_remote_post(
+            self::APP_URL . '/api/plugin/tasks/' . rawurlencode( $task_id ) . '/posts?key=' . rawurlencode( $key ),
+            [
+                'body'      => wp_json_encode( [ 'posts' => $posts ] ),
+                'headers'   => [ 'Content-Type' => 'application/json' ],
+                'timeout'   => 30,
+                'sslverify' => true,
+            ]
+        );
     }
 
     private static function execute_publish( string $task_id, array $payload, string $key ): void {
@@ -178,7 +198,7 @@ class WPSeoBoss_Tasks {
             [
                 'body'      => wp_json_encode( [ 'result' => $result ] ),
                 'headers'   => [ 'Content-Type' => 'application/json' ],
-                'timeout'   => 120,
+                'timeout'   => 30,
                 'sslverify' => true,
             ]
         );
