@@ -107,15 +107,12 @@ class WPSeoBoss_API {
             $seo_desc  = get_post_meta($post->ID, '_aioseo_description', true);
         }
 
-        // Apply content filters so shortcodes/blocks render
-        $rendered_content = apply_filters('the_content', $post->post_content);
-
         return [
             'id'             => $post->ID,
             'link'           => get_permalink($post->ID),
             'title'          => ['rendered' => get_the_title($post->ID)],
             'excerpt'        => ['rendered' => get_the_excerpt($post)],
-            'content'        => ['rendered' => $rendered_content],
+            'content'        => ['rendered' => $post->post_content],
             'parent'         => (int) $post->post_parent,
             'type'           => $post->post_type,
             'status'         => $post->post_status,
