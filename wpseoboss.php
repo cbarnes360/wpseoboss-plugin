@@ -3,7 +3,7 @@
  * Plugin Name:       WPSeoBoss Connector
  * Plugin URI:        https://wpseoboss.com
  * Description:       Connects your WordPress site to WPSeoBoss for AI-powered SEO fix write-back.
- * Version:           1.3.2
+ * Version:           1.3.3
  * Author:            WPSeoBoss
  * Author URI:        https://wpseoboss.com
  * License:           GPL-2.0-or-later
@@ -14,7 +14,7 @@
 
 defined('ABSPATH') || exit;
 
-define('WPSEOBOSS_VERSION', '1.3.2');
+define('WPSEOBOSS_VERSION', '1.3.3');
 define('WPSEOBOSS_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WPSEOBOSS_OPTION_KEY', 'wpseoboss_api_key');
 define('WPSEOBOSS_APP_URL', 'https://app.wpseoboss.com');
@@ -31,6 +31,8 @@ add_action('rest_api_init', ['WPSeoBoss_API', 'register_routes']);
 add_action('init', 'wpseoboss_handle_direct_request');
 add_action('wp_ajax_nopriv_wpseoboss_status', 'wpseoboss_ajax_status');
 add_action('wp_ajax_wpseoboss_status', 'wpseoboss_ajax_status');
+add_action('wp_ajax_nopriv_wpseoboss_run_tasks', 'wpseoboss_ajax_run_tasks');
+add_action('wp_ajax_wpseoboss_run_tasks', 'wpseoboss_ajax_run_tasks');
 add_action('admin_menu', ['WPSeoBoss_Admin', 'add_menu']);
 add_action('admin_init', ['WPSeoBoss_Admin', 'register_settings']);
 add_action('init', 'wpseoboss_register_updater');
@@ -81,6 +83,30 @@ function wpseoboss_register_updater() {
     // Use GitHub Releases + our pre-built zip asset instead of branch tracking.
     // Release-based updates are immediate and reliable — no branch transient caching.
     $updater->getVcsApi()->enableReleaseAssets();
+}
+
+// Server calls this to immediately trigger pending task execution without waiting for WP Cron.
+// Responds quickly, then executes tasks after the HTTP connection is closed.
+function wpseoboss_ajax_run_tasks() {
+    $provided = isset( $_REQUEST['key'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['key'] ) ) : '';
+    $stored   = (string) get_option( WPSEOBOSS_OPTION_KEY, '' );
+    if ( ! $provided || ! hash_equals( $stored, $provided ) ) {
+        http_response_code( 401 );
+        echo wp_json_encode( [ 'error' => 'Invalid key' ] );
+        exit;
+    }
+    // Send response first, then execute tasks (non-blocking for caller)
+    header( 'Content-Type: application/json; charset=utf-8' );
+    echo wp_json_encode( [ 'ok' => true ] );
+    if ( function_exists( 'fastcgi_finish_request' ) ) {
+        fastcgi_finish_request();
+    } elseif ( function_exists( 'litespeed_finish_request' ) ) {
+        litespeed_finish_request();
+    } else {
+        flush();
+    }
+    WPSeoBoss_Tasks::poll_and_execute();
+    exit;
 }
 
 // admin-ajax.php fallback — bypasses WAFs blocking /wp-json/ and direct query params.
