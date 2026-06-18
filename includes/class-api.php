@@ -113,7 +113,7 @@ class WPSeoBoss_API {
             'link'           => get_permalink($post->ID),
             'title'          => ['rendered' => get_the_title($post->ID)],
             'excerpt'        => ['rendered' => get_the_excerpt($post)],
-            'content'        => ['rendered' => $post->post_content],
+            'content'        => ['rendered' => apply_filters('the_content', $post->post_content)],
             'parent'         => (int) $post->post_parent,
             'type'           => $post->post_type,
             'status'         => $post->post_status,
