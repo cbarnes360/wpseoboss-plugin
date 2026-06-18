@@ -222,7 +222,7 @@ class WPSeoBoss_Tasks {
 
                 $all_posts[] = [
                     'id'      => $pid,
-                    'link'    => $row->guid,
+                    'link'    => (string) get_permalink( $pid ),
                     'title'   => [ 'rendered' => html_entity_decode( $row->post_title ?? '', ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ],
                     'excerpt' => [ 'rendered' => $excerpt ],
                     'content' => [ 'rendered' => $content ],
