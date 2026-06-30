@@ -69,9 +69,6 @@ class WPSeoBoss_Tasks {
     }
 
     public static function poll_and_execute(): void {
-        // Running detached after fastcgi_finish_request — remove PHP time limit so long
-        // scans (200+ posts) can complete without being killed by the server's 60s default.
-        @set_time_limit( 0 );
         $key = get_option( WPSEOBOSS_OPTION_KEY, '' );
         if ( ! $key ) return;
 
@@ -118,6 +115,12 @@ class WPSeoBoss_Tasks {
     private static function execute_scan( string $task_id, string $key ): void {
         global $wpdb;
 
+        // Prevent the host process manager from killing us mid-scan.
+        // ignore_user_abort keeps PHP running after the HTTP connection closes.
+        // set_time_limit(0) removes the per-request PHP execution cap (where allowed).
+        ignore_user_abort( true );
+        @set_time_limit( 0 );
+
         self::diag( 'started', [ 'task_id' => $task_id ] );
 
         $seo_plugin = WPSeoBoss_Detector::detect_seo_plugin();
@@ -132,13 +135,20 @@ class WPSeoBoss_Tasks {
         // Direct $wpdb queries for everything — bypasses WP_Query, pre_get_posts,
         // get_post_metadata, and all other WordPress filters. No WP function calls
         // in the inner loop; no filter can intercept or kill the PHP process here.
+        //
+        // SUBSTRING in SQL caps post_content at 5 000 chars before transfer so Divi
+        // sites (100 KB+ of JSON per post) don't time-out the DB→PHP transfer.
         do {
             $offset = ( $page - 1 ) * $per_page;
 
+            self::diag( 'page_fetching', [ 'page' => $page, 'offset' => $offset ] );
+
             // phpcs:disable WordPress.DB.DirectDatabaseQuery
             $rows = $wpdb->get_results( $wpdb->prepare(
-                "SELECT ID, post_title, post_content, post_excerpt, post_type,
-                        post_status, post_parent, post_date, guid
+                "SELECT ID, post_title,
+                        SUBSTRING(post_content, 1, 5000) AS post_content,
+                        SUBSTRING(post_excerpt, 1, 1000) AS post_excerpt,
+                        post_type, post_status, post_parent, post_date, guid
                  FROM {$wpdb->posts}
                  WHERE post_status = 'publish' AND post_type IN ('post', 'page')
                  ORDER BY post_date DESC
