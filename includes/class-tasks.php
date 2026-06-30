@@ -133,16 +133,18 @@ class WPSeoBoss_Tasks {
         $all_posts  = [];
         $scan_start = microtime( true );
 
+        // MySQL 5.7.8+ supports the /*+ MAX_EXECUTION_TIME(ms) */ optimizer hint.
+        // MariaDB (very common on shared/cPanel hosts) ignores that hint silently
+        // and needs `SET STATEMENT max_statement_time=N FOR <stmt>` instead.
+        $is_mariadb = stripos( (string) $wpdb->db_server_info(), 'mariadb' ) !== false;
+        self::diag( 'db_detected', [ 'is_mariadb' => $is_mariadb, 'server_info' => (string) $wpdb->db_server_info() ] );
+
         // Direct $wpdb queries for everything — bypasses WP_Query, pre_get_posts,
         // get_post_metadata, and all other WordPress filters. No WP function calls
         // in the inner loop; no filter can intercept or kill the PHP process here.
         //
         // SUBSTRING in SQL caps post_content at 5 000 chars before transfer so Divi
         // sites (100 KB+ of JSON per post) don't time-out the DB→PHP transfer.
-        //
-        // MAX_EXECUTION_TIME hint (MySQL 5.7.8+) caps each query at 8 s so a slow or
-        // locked table returns gracefully instead of hanging until the host kills PHP.
-        // Silently ignored on older MySQL / MariaDB — safe to leave in.
         do {
             // Time-budget guard: if we've already used 40 s of wall time, stop
             // collecting and deliver whatever we have. Prevents PHP-FPM's
@@ -160,18 +162,21 @@ class WPSeoBoss_Tasks {
 
             self::diag( 'page_fetching', [ 'page' => $page, 'offset' => $offset ] );
 
-            // phpcs:disable WordPress.DB.DirectDatabaseQuery
-            $rows = $wpdb->get_results( $wpdb->prepare(
-                "SELECT /*+ MAX_EXECUTION_TIME(8000) */ ID, post_title,
+            $base_sql = "SELECT ID, post_title,
                         SUBSTRING(post_content, 1, 5000) AS post_content,
                         SUBSTRING(post_excerpt, 1, 1000) AS post_excerpt,
                         post_type, post_status, post_parent, post_date, guid
                  FROM {$wpdb->posts}
                  WHERE post_status = 'publish' AND post_type IN ('post', 'page')
                  ORDER BY post_date DESC
-                 LIMIT %d OFFSET %d",
-                $per_page, $offset
-            ) );
+                 LIMIT %d OFFSET %d";
+
+            // phpcs:disable WordPress.DB.DirectDatabaseQuery
+            $rows = $is_mariadb
+                ? $wpdb->get_results( $wpdb->prepare( "SET STATEMENT max_statement_time=8 FOR " . $base_sql, $per_page, $offset ) )
+                : $wpdb->get_results( $wpdb->prepare( str_replace( 'SELECT ID', 'SELECT /*+ MAX_EXECUTION_TIME(8000) */ ID', $base_sql ), $per_page, $offset ) );
+
+            self::diag( 'page_main_query_done', [ 'page' => $page, 'rows_got' => is_array( $rows ) ? count( $rows ) : -1, 'db_err' => $wpdb->last_error ] );
 
             if ( $page === 1 ) {
                 $total     = (int) $wpdb->get_var(
@@ -195,6 +200,7 @@ class WPSeoBoss_Tasks {
             // Fetch all needed SEO meta in ONE direct query per page — bypasses
             // get_post_metadata filter (which AIOSEO hooks to compute dynamic values)
             $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+            self::diag( 'page_meta_query_starting', [ 'page' => $page, 'ids' => count( $ids ) ] );
             // phpcs:disable WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQLPlaceholders
             $meta_rows = $wpdb->get_results( $wpdb->prepare(
                 "SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta}
@@ -207,6 +213,7 @@ class WPSeoBoss_Tasks {
                 ...$ids
             ) );
             // phpcs:enable WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQLPlaceholders
+            self::diag( 'page_meta_query_done', [ 'page' => $page, 'meta_rows' => is_array( $meta_rows ) ? count( $meta_rows ) : -1 ] );
 
             // Index meta by [post_id][meta_key]
             $meta = [];
