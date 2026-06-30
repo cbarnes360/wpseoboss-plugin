@@ -250,43 +250,9 @@ class WPSeoBoss_Tasks {
             return;
         }
 
-        self::diag( 'sending_posts', [ 'post_count' => count( $all_posts ) ] );
-
-        // Send in 500-post chunks to avoid hitting the server's 10MB body limit.
-        // Server accumulates via /posts, then /done with empty body finalises.
-        $chunk_size = 500;
-        $chunks     = array_chunk( $all_posts, $chunk_size );
-        $posts_url  = self::APP_URL . '/api/plugin/tasks/' . rawurlencode( $task_id ) . '/posts?key=' . rawurlencode( $key );
-
-        foreach ( $chunks as $i => $chunk ) {
-            $chunk_body = (string) json_encode( [ 'posts' => $chunk ], JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE );
-            self::diag( 'sending_chunk', [ 'chunk' => $i + 1, 'of' => count( $chunks ), 'posts' => count( $chunk ), 'bytes' => strlen( $chunk_body ) ] );
-            // Raw cURL — same as complete_task_raw — bypasses pre_http_request filters so
-            // security plugins (Wordfence, AIOSEO) cannot intercept and kill the request.
-            $ch = curl_init( $posts_url );
-            curl_setopt_array( $ch, [
-                CURLOPT_POST           => true,
-                CURLOPT_POSTFIELDS     => $chunk_body,
-                CURLOPT_HTTPHEADER     => [ 'Content-Type: application/json', 'Content-Length: ' . strlen( $chunk_body ) ],
-                CURLOPT_TIMEOUT        => 60,
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_SSL_VERIFYPEER => true,
-            ] );
-            $http_code = 0;
-            curl_exec( $ch );
-            $http_code = curl_getinfo( $ch, CURLINFO_HTTP_CODE );
-            $errno     = curl_errno( $ch );
-            $errmsg    = curl_error( $ch );
-            curl_close( $ch );
-            self::diag( 'chunk_sent', [ 'chunk' => $i + 1, 'http_code' => $http_code, 'errno' => $errno ] );
-            if ( $errno || $http_code !== 200 ) {
-                self::fail_task( $task_id, $key, 'Chunk ' . ( $i + 1 ) . ' failed: ' . ( $errmsg ?: "HTTP $http_code" ) );
-                return;
-            }
-        }
-
-        // Signal completion — server assembles from accumulated chunks.
-        self::complete_task_raw( $task_id, $key, (string) json_encode( [ 'result' => [] ] ) );
+        $body = (string) json_encode( [ 'result' => [ 'posts' => $all_posts ] ], JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE );
+        self::diag( 'sending_all', [ 'post_count' => count( $all_posts ), 'body_bytes' => strlen( $body ) ] );
+        self::complete_task_raw( $task_id, $key, $body );
     }
 
     private static function execute_publish( string $task_id, array $payload, string $key ): void {
