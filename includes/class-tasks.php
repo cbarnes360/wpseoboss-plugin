@@ -261,16 +261,26 @@ class WPSeoBoss_Tasks {
         foreach ( $chunks as $i => $chunk ) {
             $chunk_body = (string) json_encode( [ 'posts' => $chunk ], JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE );
             self::diag( 'sending_chunk', [ 'chunk' => $i + 1, 'of' => count( $chunks ), 'posts' => count( $chunk ), 'bytes' => strlen( $chunk_body ) ] );
-            $response = wp_remote_post( $posts_url, [
-                'body'      => $chunk_body,
-                'headers'   => [ 'Content-Type' => 'application/json' ],
-                'timeout'   => 30,
-                'blocking'  => true,
-                'sslverify' => true,
+            // Raw cURL — same as complete_task_raw — bypasses pre_http_request filters so
+            // security plugins (Wordfence, AIOSEO) cannot intercept and kill the request.
+            $ch = curl_init( $posts_url );
+            curl_setopt_array( $ch, [
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $chunk_body,
+                CURLOPT_HTTPHEADER     => [ 'Content-Type: application/json', 'Content-Length: ' . strlen( $chunk_body ) ],
+                CURLOPT_TIMEOUT        => 60,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_SSL_VERIFYPEER => true,
             ] );
-            if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) {
-                $err = is_wp_error( $response ) ? $response->get_error_message() : 'HTTP ' . wp_remote_retrieve_response_code( $response );
-                self::fail_task( $task_id, $key, 'Chunk ' . ( $i + 1 ) . ' failed: ' . $err );
+            $http_code = 0;
+            curl_exec( $ch );
+            $http_code = curl_getinfo( $ch, CURLINFO_HTTP_CODE );
+            $errno     = curl_errno( $ch );
+            $errmsg    = curl_error( $ch );
+            curl_close( $ch );
+            self::diag( 'chunk_sent', [ 'chunk' => $i + 1, 'http_code' => $http_code, 'errno' => $errno ] );
+            if ( $errno || $http_code !== 200 ) {
+                self::fail_task( $task_id, $key, 'Chunk ' . ( $i + 1 ) . ' failed: ' . ( $errmsg ?: "HTTP $http_code" ) );
                 return;
             }
         }
