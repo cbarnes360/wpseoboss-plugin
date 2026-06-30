@@ -222,6 +222,7 @@ class WPSeoBoss_Tasks {
             }
 
             foreach ( $rows as $row ) {
+              try {
                 $pid = (int) $row->ID;
                 $pm  = $meta[ $pid ] ?? [];
 
@@ -245,15 +246,22 @@ class WPSeoBoss_Tasks {
                 // (wp_trim_words hooks excerpt_length/excerpt_more — avoid filters)
                 $excerpt = trim( $row->post_excerpt ?? '' );
                 if ( ! $excerpt && ! empty( $row->post_content ) ) {
-                    $stripped = strip_tags( substr( $row->post_content, 0, 5000 ) );
+                    // wp_check_invalid_utf8 strips malformed byte sequences (common in
+                    // copy-pasted Divi content) — without this, preg_split's /u modifier
+                    // returns false on bad UTF-8, and count(false) is an uncaught
+                    // TypeError on PHP 8+ that silently kills the whole scan mid-row.
+                    $stripped = strip_tags( substr( wp_check_invalid_utf8( $row->post_content, true ), 0, 5000 ) );
                     $words    = preg_split( '/\s+/u', trim( $stripped ), 57 );
+                    if ( ! is_array( $words ) ) {
+                        $words = array_filter( explode( ' ', trim( $stripped ) ) );
+                    }
                     $excerpt  = count( $words ) > 55
                         ? implode( ' ', array_slice( $words, 0, 55 ) ) . '...'
                         : implode( ' ', $words );
                 }
 
                 // Content capped to 500 chars — all we need for SEO analysis
-                $content = isset( $row->post_content ) ? substr( $row->post_content, 0, 500 ) : '';
+                $content = isset( $row->post_content ) ? substr( wp_check_invalid_utf8( $row->post_content, true ), 0, 500 ) : '';
 
                 $all_posts[] = [
                     'id'      => $pid,
@@ -270,6 +278,11 @@ class WPSeoBoss_Tasks {
                         'focuskw'     => $focus_kw  ?: null,
                     ],
                 ];
+              } catch ( \Throwable $e ) {
+                // A single malformed post (bad encoding, unexpected data shape) must
+                // never take down the whole scan — skip it and keep going.
+                self::diag( 'row_error', [ 'page' => $page, 'post_id' => $row->ID ?? null, 'msg' => $e->getMessage() ] );
+              }
             }
 
             self::diag( 'page_done', [ 'page' => $page, 'accumulated' => count( $all_posts ) ] );
