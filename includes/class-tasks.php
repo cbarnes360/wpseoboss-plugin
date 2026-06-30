@@ -93,7 +93,7 @@ class WPSeoBoss_Tasks {
 
         switch ( $type ) {
             case 'scan':
-                self::execute_scan( $task_id, $key );
+                self::execute_scan( $task_id, $key, $task['payload'] ?? [] );
                 break;
             case 'publish':
                 self::execute_publish( $task_id, $task['payload'] ?? [], $key );
@@ -112,7 +112,7 @@ class WPSeoBoss_Tasks {
         update_option( 'wpseoboss_scan_diag', array_merge( [ 'step' => $step, 'ts' => time(), 'mem' => memory_get_usage(true) ], $extra ), false );
     }
 
-    private static function execute_scan( string $task_id, string $key ): void {
+    private static function execute_scan( string $task_id, string $key, array $payload = [] ): void {
         global $wpdb;
 
         // Prevent the host process manager from killing us mid-scan.
@@ -121,7 +121,13 @@ class WPSeoBoss_Tasks {
         ignore_user_abort( true );
         @set_time_limit( 0 );
 
-        self::diag( 'started', [ 'task_id' => $task_id ] );
+        // Cursor-based incremental scan: server passes the minimum post ID from the
+        // previous batch so we fetch the next window of older posts (ID DESC).
+        $cursor_id = isset( $payload['scan_cursor_id'] ) && $payload['scan_cursor_id'] !== null
+            ? (int) $payload['scan_cursor_id']
+            : null;
+
+        self::diag( 'started', [ 'task_id' => $task_id, 'cursor_id' => $cursor_id ] );
 
         $seo_plugin = WPSeoBoss_Detector::detect_seo_plugin();
 
@@ -145,28 +151,45 @@ class WPSeoBoss_Tasks {
         //
         // SUBSTRING in SQL caps post_content at 5 000 chars before transfer so Divi
         // sites (100 KB+ of JSON per post) don't time-out the DB→PHP transfer.
-        // Hard cap on posts collected, independent of the time budget. Large sites
-        // (fundingo.com has 13,000+ published posts/pages) can collect their full
-        // catalog within the 40s time budget, producing a JSON payload that exceeds
-        // the server's 10MB request body limit (HTTP 413). 1,500 posts is far more
-        // than any SEO dashboard needs from a single scan and keeps payload size safe.
+        // Per-batch cap: keeps the /done payload under the server's body limit and
+        // enables cursor-based continuation (the server queues the next batch automatically).
         $max_posts = 1500;
+
+        // $min_id tracks the lowest post ID seen in this batch — used as the cursor
+        // for the next batch. PHP_INT_MAX as sentinel: never touched if batch is empty.
+        $min_id = PHP_INT_MAX;
+
+        // null = catalog exhausted; set to $min_id when we break due to cap/time limit
+        // so the server knows to queue another batch.
+        $next_cursor_id = null;
+
+        // Cursor WHERE snippet — pre-escaped integer, safe to embed in the query string.
+        $cursor_where = $cursor_id !== null
+            ? $wpdb->prepare( ' AND ID < %d', $cursor_id )
+            : '';
 
         do {
             // Time-budget guard: if we've already used 40 s of wall time, stop
             // collecting and deliver whatever we have. Prevents PHP-FPM's
             // request_terminate_timeout from killing us mid-scan on slow hosts.
             if ( $page > 1 && ( microtime( true ) - $scan_start ) > 40.0 ) {
+                $next_cursor_id = ( $min_id < PHP_INT_MAX ) ? $min_id : null;
                 self::diag( 'time_budget_reached', [
-                    'page'      => $page,
-                    'elapsed_s' => round( microtime( true ) - $scan_start, 2 ),
-                    'posts_so_far' => count( $all_posts ),
+                    'page'           => $page,
+                    'elapsed_s'      => round( microtime( true ) - $scan_start, 2 ),
+                    'posts_so_far'   => count( $all_posts ),
+                    'next_cursor_id' => $next_cursor_id,
                 ] );
                 break;
             }
 
             if ( count( $all_posts ) >= $max_posts ) {
-                self::diag( 'post_cap_reached', [ 'page' => $page, 'posts_so_far' => count( $all_posts ) ] );
+                $next_cursor_id = ( $min_id < PHP_INT_MAX ) ? $min_id : null;
+                self::diag( 'post_cap_reached', [
+                    'page'           => $page,
+                    'posts_so_far'   => count( $all_posts ),
+                    'next_cursor_id' => $next_cursor_id,
+                ] );
                 break;
             }
 
@@ -174,13 +197,15 @@ class WPSeoBoss_Tasks {
 
             self::diag( 'page_fetching', [ 'page' => $page, 'offset' => $offset ] );
 
+            // ORDER BY ID DESC so the cursor (min ID seen) cleanly partitions pages:
+            // next batch is WHERE ID < $min_id, giving non-overlapping, exhaustive coverage.
             $base_sql = "SELECT ID, post_title,
                         SUBSTRING(post_content, 1, 5000) AS post_content,
                         SUBSTRING(post_excerpt, 1, 1000) AS post_excerpt,
                         post_type, post_status, post_parent, post_date, guid
                  FROM {$wpdb->posts}
-                 WHERE post_status = 'publish' AND post_type IN ('post', 'page')
-                 ORDER BY post_date DESC
+                 WHERE post_status = 'publish' AND post_type IN ('post', 'page'){$cursor_where}
+                 ORDER BY ID DESC
                  LIMIT %d OFFSET %d";
 
             // phpcs:disable WordPress.DB.DirectDatabaseQuery
@@ -192,7 +217,7 @@ class WPSeoBoss_Tasks {
 
             if ( $page === 1 ) {
                 $total     = (int) $wpdb->get_var(
-                    "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_status = 'publish' AND post_type IN ('post', 'page')"
+                    "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_status = 'publish' AND post_type IN ('post', 'page'){$cursor_where}"
                 );
                 $max_pages = max( 1, (int) ceil( $total / $per_page ) );
                 self::diag( 'page_1_queried', [ 'total' => $total, 'max_pages' => $max_pages, 'rows_got' => count( $rows ) ] );
@@ -234,8 +259,9 @@ class WPSeoBoss_Tasks {
             }
 
             foreach ( $rows as $row ) {
+              $pid    = (int) $row->ID;
+              $min_id = min( $min_id, $pid ); // track lowest ID for next-batch cursor
               try {
-                $pid = (int) $row->ID;
                 $pm  = $meta[ $pid ] ?? [];
 
                 $seo_title = '';
@@ -310,8 +336,11 @@ class WPSeoBoss_Tasks {
             return;
         }
 
-        $body = (string) json_encode( [ 'result' => [ 'posts' => $all_posts ] ], JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE );
-        self::diag( 'sending_all', [ 'post_count' => count( $all_posts ), 'body_bytes' => strlen( $body ) ] );
+        $body = (string) json_encode(
+            [ 'result' => [ 'posts' => $all_posts, 'next_cursor_id' => $next_cursor_id ] ],
+            JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE
+        );
+        self::diag( 'sending_all', [ 'post_count' => count( $all_posts ), 'next_cursor_id' => $next_cursor_id, 'body_bytes' => strlen( $body ) ] );
         self::complete_task_raw( $task_id, $key, $body );
     }
 
