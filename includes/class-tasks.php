@@ -250,10 +250,33 @@ class WPSeoBoss_Tasks {
             return;
         }
 
-        $body = (string) json_encode( [ 'result' => [ 'posts' => $all_posts ] ], JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE );
-        self::diag( 'json_encoded', [ 'body_bytes' => strlen( $body ), 'post_count' => count( $all_posts ) ] );
+        self::diag( 'sending_posts', [ 'post_count' => count( $all_posts ) ] );
 
-        self::complete_task_raw( $task_id, $key, $body );
+        // Send in 500-post chunks to avoid hitting the server's 10MB body limit.
+        // Server accumulates via /posts, then /done with empty body finalises.
+        $chunk_size = 500;
+        $chunks     = array_chunk( $all_posts, $chunk_size );
+        $posts_url  = self::APP_URL . '/api/plugin/tasks/' . rawurlencode( $task_id ) . '/posts?key=' . rawurlencode( $key );
+
+        foreach ( $chunks as $i => $chunk ) {
+            $chunk_body = (string) json_encode( [ 'posts' => $chunk ], JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE );
+            self::diag( 'sending_chunk', [ 'chunk' => $i + 1, 'of' => count( $chunks ), 'posts' => count( $chunk ), 'bytes' => strlen( $chunk_body ) ] );
+            $response = wp_remote_post( $posts_url, [
+                'body'      => $chunk_body,
+                'headers'   => [ 'Content-Type' => 'application/json' ],
+                'timeout'   => 30,
+                'blocking'  => true,
+                'sslverify' => true,
+            ] );
+            if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) {
+                $err = is_wp_error( $response ) ? $response->get_error_message() : 'HTTP ' . wp_remote_retrieve_response_code( $response );
+                self::fail_task( $task_id, $key, 'Chunk ' . ( $i + 1 ) . ' failed: ' . $err );
+                return;
+            }
+        }
+
+        // Signal completion — server assembles from accumulated chunks.
+        self::complete_task_raw( $task_id, $key, (string) json_encode( [ 'result' => [] ] ) );
     }
 
     private static function execute_publish( string $task_id, array $payload, string $key ): void {
