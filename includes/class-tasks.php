@@ -22,6 +22,7 @@ class WPSeoBoss_Tasks {
         wp_remote_post( self::APP_URL . '/api/plugin/register', [
             'body'    => wp_json_encode( [
                 'key'          => $key,
+                'version'      => WPSEOBOSS_VERSION,
                 'seo_plugin'   => $info['seo_plugin']   ?? null,
                 'page_builder' => $info['page_builder'] ?? null,
             ] ),
@@ -361,6 +362,7 @@ class WPSeoBoss_Tasks {
         wp_remote_post( self::APP_URL . '/api/plugin/register', [
             'body'      => wp_json_encode( [
                 'key'          => $key,
+                'version'      => WPSEOBOSS_VERSION,
                 'seo_plugin'   => $info['seo_plugin']   ?? null,
                 'page_builder' => $info['page_builder'] ?? null,
             ] ),
