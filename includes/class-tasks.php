@@ -127,10 +127,11 @@ class WPSeoBoss_Tasks {
 
         self::diag( 'seo_plugin_detected', [ 'seo_plugin' => $seo_plugin ] );
 
-        $per_page  = 50;
-        $page      = 1;
-        $max_pages = null;
-        $all_posts = [];
+        $per_page   = 50;
+        $page       = 1;
+        $max_pages  = null;
+        $all_posts  = [];
+        $scan_start = microtime( true );
 
         // Direct $wpdb queries for everything — bypasses WP_Query, pre_get_posts,
         // get_post_metadata, and all other WordPress filters. No WP function calls
@@ -138,14 +139,30 @@ class WPSeoBoss_Tasks {
         //
         // SUBSTRING in SQL caps post_content at 5 000 chars before transfer so Divi
         // sites (100 KB+ of JSON per post) don't time-out the DB→PHP transfer.
+        //
+        // MAX_EXECUTION_TIME hint (MySQL 5.7.8+) caps each query at 8 s so a slow or
+        // locked table returns gracefully instead of hanging until the host kills PHP.
+        // Silently ignored on older MySQL / MariaDB — safe to leave in.
         do {
+            // Time-budget guard: if we've already used 40 s of wall time, stop
+            // collecting and deliver whatever we have. Prevents PHP-FPM's
+            // request_terminate_timeout from killing us mid-scan on slow hosts.
+            if ( $page > 1 && ( microtime( true ) - $scan_start ) > 40.0 ) {
+                self::diag( 'time_budget_reached', [
+                    'page'      => $page,
+                    'elapsed_s' => round( microtime( true ) - $scan_start, 2 ),
+                    'posts_so_far' => count( $all_posts ),
+                ] );
+                break;
+            }
+
             $offset = ( $page - 1 ) * $per_page;
 
             self::diag( 'page_fetching', [ 'page' => $page, 'offset' => $offset ] );
 
             // phpcs:disable WordPress.DB.DirectDatabaseQuery
             $rows = $wpdb->get_results( $wpdb->prepare(
-                "SELECT ID, post_title,
+                "SELECT /*+ MAX_EXECUTION_TIME(8000) */ ID, post_title,
                         SUBSTRING(post_content, 1, 5000) AS post_content,
                         SUBSTRING(post_excerpt, 1, 1000) AS post_excerpt,
                         post_type, post_status, post_parent, post_date, guid
@@ -249,6 +266,7 @@ class WPSeoBoss_Tasks {
             }
 
             self::diag( 'page_done', [ 'page' => $page, 'accumulated' => count( $all_posts ) ] );
+            $wpdb->flush(); // free buffered query results between pages
             $page++;
         } while ( $page <= $max_pages );
 
