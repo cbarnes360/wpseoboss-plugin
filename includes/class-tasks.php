@@ -145,6 +145,13 @@ class WPSeoBoss_Tasks {
         //
         // SUBSTRING in SQL caps post_content at 5 000 chars before transfer so Divi
         // sites (100 KB+ of JSON per post) don't time-out the DB→PHP transfer.
+        // Hard cap on posts collected, independent of the time budget. Large sites
+        // (fundingo.com has 13,000+ published posts/pages) can collect their full
+        // catalog within the 40s time budget, producing a JSON payload that exceeds
+        // the server's 10MB request body limit (HTTP 413). 1,500 posts is far more
+        // than any SEO dashboard needs from a single scan and keeps payload size safe.
+        $max_posts = 1500;
+
         do {
             // Time-budget guard: if we've already used 40 s of wall time, stop
             // collecting and deliver whatever we have. Prevents PHP-FPM's
@@ -155,6 +162,11 @@ class WPSeoBoss_Tasks {
                     'elapsed_s' => round( microtime( true ) - $scan_start, 2 ),
                     'posts_so_far' => count( $all_posts ),
                 ] );
+                break;
+            }
+
+            if ( count( $all_posts ) >= $max_posts ) {
+                self::diag( 'post_cap_reached', [ 'page' => $page, 'posts_so_far' => count( $all_posts ) ] );
                 break;
             }
 
