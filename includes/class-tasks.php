@@ -307,19 +307,11 @@ class WPSeoBoss_Tasks {
 
                 $elementor_data = $meta[ $pid ]['_elementor_data'] ?? null;
                 if ( $elementor_data ) {
-                    // Elementor stores links in JSON as "url":"https://..." (button/link widgets)
-                    // and as href=\"https://...\" inside text-editor widget HTML.
-                    preg_match_all(
-                        '/"url"\s*:\s*"(' . preg_quote( $site_url, '/' ) . '[^"]*)"/',
-                        $elementor_data,
-                        $m1
-                    );
-                    preg_match_all(
-                        '/href=\\\\"(' . preg_quote( $site_url, '/' ) . '[^\\\\"]*)\\\\"/',
-                        $elementor_data,
-                        $m2
-                    );
-                    $link_urls = array_merge( $m1[1] ?? [], $m2[1] ?? [] );
+                    // json_decode handles \/ → / unescaping that breaks regex matching on raw JSON
+                    $decoded = json_decode( $elementor_data, true );
+                    if ( is_array( $decoded ) ) {
+                        $link_urls = self::extract_elementor_urls_recursive( $decoded, $site_url );
+                    }
                 }
 
                 if ( empty( $link_urls ) ) {
@@ -483,6 +475,32 @@ class WPSeoBoss_Tasks {
                 'sslverify' => true,
             ]
         );
+    }
+
+    /**
+     * Recursively walk a decoded Elementor JSON array and collect internal URLs.
+     * Handles: button/link widget "url" fields, and <a href="..."> inside text editor HTML strings.
+     */
+    private static function extract_elementor_urls_recursive( array $data, string $site_url ): array {
+        $urls = [];
+        foreach ( $data as $key => $value ) {
+            if ( is_string( $value ) ) {
+                if ( ( $key === 'url' || $key === 'href' ) && strpos( $value, $site_url ) === 0 ) {
+                    $urls[] = $value;
+                } elseif ( strpos( $value, '<a ' ) !== false && strpos( $value, $site_url ) !== false ) {
+                    // HTML content in text editor widget — json_decode already unescaped quotes
+                    preg_match_all(
+                        '/href=["\'](' . preg_quote( $site_url, '/' ) . '[^"\'#?][^"\']*)["\']/',
+                        $value,
+                        $m
+                    );
+                    $urls = array_merge( $urls, $m[1] ?? [] );
+                }
+            } elseif ( is_array( $value ) ) {
+                $urls = array_merge( $urls, self::extract_elementor_urls_recursive( $value, $site_url ) );
+            }
+        }
+        return $urls;
     }
 
     /** Blocking version of register — used in cron where we want to confirm before polling tasks. */
