@@ -245,7 +245,8 @@ class WPSeoBoss_Tasks {
                  AND meta_key IN (
                      '_aioseo_title','_aioseo_description',
                      '_yoast_wpseo_title','_yoast_wpseo_metadesc','_yoast_wpseo_focuskw',
-                     'rank_math_title','rank_math_description','rank_math_focus_keyword'
+                     'rank_math_title','rank_math_description','rank_math_focus_keyword',
+                     '_elementor_data'
                  )",
                 ...$ids
             ) );
@@ -301,15 +302,43 @@ class WPSeoBoss_Tasks {
                 // Sanitise the raw content once; reuse for both link extraction and the truncated field
                 $raw_content = isset( $row->post_content ) ? wp_check_invalid_utf8( $row->post_content, true ) : '';
 
-                // Extract internal link hrefs from full content (fast regex — no apply_filters needed
-                // for href attributes, and avoids expensive page-builder rendering for 17k posts).
-                $site_url = home_url();
-                preg_match_all(
-                    '/href=["\'](' . preg_quote( $site_url, '/' ) . '[^"\'#?][^"\']*)["\']/',
-                    $raw_content,
-                    $link_matches
-                );
-                $outbound_links = array_values( array_unique( $link_matches[1] ) );
+                $site_url      = home_url();
+                $link_urls     = [];
+
+                $elementor_data = $meta[ $pid ]['_elementor_data'] ?? null;
+                if ( $elementor_data ) {
+                    // Elementor stores links in JSON as "url":"https://..." (button/link widgets)
+                    // and as href=\"https://...\" inside text-editor widget HTML.
+                    preg_match_all(
+                        '/"url"\s*:\s*"(' . preg_quote( $site_url, '/' ) . '[^"]*)"/',
+                        $elementor_data,
+                        $m1
+                    );
+                    preg_match_all(
+                        '/href=\\\\"(' . preg_quote( $site_url, '/' ) . '[^\\\\"]*)\\\\"/',
+                        $elementor_data,
+                        $m2
+                    );
+                    $link_urls = array_merge( $m1[1] ?? [], $m2[1] ?? [] );
+                }
+
+                if ( empty( $link_urls ) ) {
+                    // Standard HTML href (Gutenberg, classic editor, Divi rendered text blocks)
+                    preg_match_all(
+                        '/href=["\'](' . preg_quote( $site_url, '/' ) . '[^"\'#?][^"\']*)["\']/',
+                        $raw_content,
+                        $m3
+                    );
+                    // Divi shortcode link attributes: button_url="..." link="..." url="..."
+                    preg_match_all(
+                        '/(?:button_url|link|url)=["\'](' . preg_quote( $site_url, '/' ) . '[^"\'#?][^"\']*)["\']/',
+                        $raw_content,
+                        $m4
+                    );
+                    $link_urls = array_merge( $m3[1] ?? [], $m4[1] ?? [] );
+                }
+
+                $outbound_links = array_values( array_unique( $link_urls ) );
 
                 // Content capped to 500 chars — only used for excerpt/word-count on server
                 $content = substr( $raw_content, 0, 500 );
