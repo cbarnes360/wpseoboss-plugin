@@ -298,18 +298,32 @@ class WPSeoBoss_Tasks {
                         : implode( ' ', $words );
                 }
 
-                // Content capped to 500 chars — all we need for SEO analysis
-                $content = isset( $row->post_content ) ? substr( wp_check_invalid_utf8( $row->post_content, true ), 0, 500 ) : '';
+                // Sanitise the raw content once; reuse for both link extraction and the truncated field
+                $raw_content = isset( $row->post_content ) ? wp_check_invalid_utf8( $row->post_content, true ) : '';
+
+                // Extract internal link hrefs from full content (fast regex — no apply_filters needed
+                // for href attributes, and avoids expensive page-builder rendering for 17k posts).
+                $site_url = home_url();
+                preg_match_all(
+                    '/href=["\'](' . preg_quote( $site_url, '/' ) . '[^"\'#?][^"\']*)["\']/',
+                    $raw_content,
+                    $link_matches
+                );
+                $outbound_links = array_values( array_unique( $link_matches[1] ) );
+
+                // Content capped to 500 chars — only used for excerpt/word-count on server
+                $content = substr( $raw_content, 0, 500 );
 
                 $all_posts[] = [
-                    'id'      => $pid,
-                    'link'    => (string) get_permalink( $pid ),
-                    'title'   => [ 'rendered' => html_entity_decode( $row->post_title ?? '', ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ],
-                    'excerpt' => [ 'rendered' => $excerpt ],
-                    'content' => [ 'rendered' => $content ],
-                    'parent'  => (int) $row->post_parent,
-                    'type'    => $row->post_type,
-                    'status'  => $row->post_status,
+                    'id'            => $pid,
+                    'link'          => (string) get_permalink( $pid ),
+                    'title'         => [ 'rendered' => html_entity_decode( $row->post_title ?? '', ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ],
+                    'excerpt'       => [ 'rendered' => $excerpt ],
+                    'content'       => [ 'rendered' => $content ],
+                    'parent'        => (int) $row->post_parent,
+                    'type'          => $row->post_type,
+                    'status'        => $row->post_status,
+                    'outbound_links' => $outbound_links,
                     'yoast_head_json' => [
                         'title'       => $seo_title ?: null,
                         'description' => $seo_desc  ?: null,
