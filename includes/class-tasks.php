@@ -101,6 +101,9 @@ class WPSeoBoss_Tasks {
             case 'apply-fix':
                 self::execute_apply_fix( $task_id, $task['payload'] ?? [], $key );
                 break;
+            case 'resolve_redirects':
+                self::execute_resolve_redirects( $task_id, $key, $task['payload'] ?? [] );
+                break;
             default:
                 self::fail_task( $task_id, $key, 'Unknown task type: ' . $type );
         }
@@ -330,11 +333,7 @@ class WPSeoBoss_Tasks {
                     $link_urls = array_merge( $m3[1] ?? [], $m4[1] ?? [] );
                 }
 
-                $unique_links   = array_values( array_unique( $link_urls ) );
-                $outbound_links = array_map( function( $href ) {
-                    $pid = url_to_postid( $href );
-                    return [ 'h' => $href, 'id' => $pid ?: 0 ];
-                }, $unique_links );
+                $outbound_links = array_values( array_unique( $link_urls ) );
 
                 // Content capped to 500 chars — only used for excerpt/word-count on server
                 $content = substr( $raw_content, 0, 500 );
@@ -391,6 +390,40 @@ class WPSeoBoss_Tasks {
         } else {
             self::complete_task( $task_id, $key, $result );
         }
+    }
+
+    private static function execute_resolve_redirects( string $task_id, string $key, array $payload ): void {
+        ignore_user_abort( true );
+        @set_time_limit( 0 );
+
+        $urls = isset( $payload['urls'] ) && is_array( $payload['urls'] ) ? $payload['urls'] : [];
+        if ( empty( $urls ) ) {
+            self::complete_task( $task_id, $key, [ 'redirects' => [] ] );
+            return;
+        }
+
+        $redirects = [];
+        foreach ( $urls as $raw_url ) {
+            $url = (string) $raw_url;
+            if ( ! $url ) continue;
+            $response = wp_remote_head( $url, [
+                'timeout'     => 10,
+                'redirection' => 0, // single hop only — we want the first Location header
+                'sslverify'   => true,
+            ] );
+            if ( is_wp_error( $response ) ) continue;
+            $code = (int) wp_remote_retrieve_response_code( $response );
+            if ( $code < 300 || $code >= 400 ) continue;
+            $location = wp_remote_retrieve_header( $response, 'location' );
+            if ( ! $location ) continue;
+            $from = parse_url( $url, PHP_URL_PATH );
+            $to   = parse_url( $location, PHP_URL_PATH );
+            if ( $from && $to && $from !== $to ) {
+                $redirects[] = [ 'from' => $from, 'to' => $to ];
+            }
+        }
+
+        self::complete_task( $task_id, $key, [ 'redirects' => $redirects ] );
     }
 
     private static function execute_apply_fix( string $task_id, array $payload, string $key ): void {
