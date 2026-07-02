@@ -330,7 +330,11 @@ class WPSeoBoss_Tasks {
                     $link_urls = array_merge( $m3[1] ?? [], $m4[1] ?? [] );
                 }
 
-                $outbound_links = array_values( array_unique( $link_urls ) );
+                $unique_links   = array_values( array_unique( $link_urls ) );
+                $outbound_links = array_map( function( $href ) {
+                    $pid = url_to_postid( $href );
+                    return [ 'h' => $href, 'id' => $pid ?: 0 ];
+                }, $unique_links );
 
                 // Content capped to 500 chars — only used for excerpt/word-count on server
                 $content = substr( $raw_content, 0, 500 );
