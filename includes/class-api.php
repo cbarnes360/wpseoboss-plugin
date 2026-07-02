@@ -35,6 +35,12 @@ class WPSeoBoss_API {
             'callback'            => [self::class, 'handle_apply_fix'],
             'permission_callback' => [self::class, 'verify_api_key'],
         ]);
+
+        register_rest_route($namespace, '/resolve-urls', [
+            'methods'             => 'POST',
+            'callback'            => [self::class, 'handle_resolve_urls'],
+            'permission_callback' => [self::class, 'verify_api_key'],
+        ]);
     }
 
     public static function verify_api_key(\WP_REST_Request $request): bool {
@@ -276,6 +282,90 @@ class WPSeoBoss_API {
             'id'      => $post_id,
             'link'    => get_permalink($post_id),
         ], 200);
+    }
+
+    // POST /wpseoboss/v1/resolve-urls
+    // Accepts { "urls": ["https://site.com/old-path", ...] } and resolves each to a WP post ID.
+    // Resolution order: url_to_postid() → _wp_old_slug meta → HTTP redirect from origin server.
+    // Running from origin bypasses CDN/Cloudflare IP restrictions that block requests from Render.
+    public static function handle_resolve_urls(\WP_REST_Request $request): \WP_REST_Response {
+        $params = $request->get_json_params();
+        $urls   = isset($params['urls']) && is_array($params['urls'])
+                  ? array_slice($params['urls'], 0, 100)
+                  : [];
+
+        $results = [];
+        foreach ($urls as $raw) {
+            $url = esc_url_raw($raw);
+            if (!$url) continue;
+
+            $post_id   = null;
+            $final_url = null;
+
+            // 1. WordPress built-in: handles current permalink structures
+            $pid = url_to_postid($url);
+            if ($pid) {
+                $post_id = $pid;
+            } else {
+                // 2. Old-slug meta: catches pages whose slug was renamed inside WordPress
+                $path = wp_parse_url($url, PHP_URL_PATH) ?? '';
+                $slug = $path ? basename(rtrim($path, '/')) : '';
+                if ($slug) {
+                    $found = get_posts([
+                        'meta_key'    => '_wp_old_slug',
+                        'meta_value'  => $slug,
+                        'post_type'   => ['post', 'page'],
+                        'post_status' => 'publish',
+                        'numberposts' => 1,
+                        'fields'      => 'ids',
+                    ]);
+                    if ($found) $post_id = (int) $found[0];
+                }
+
+                if (!$post_id) {
+                    // 3. HTTP redirect-following from origin server (different network path than Render)
+                    $resolved = self::follow_redirect($url);
+                    if ($resolved) {
+                        $final_url = $resolved;
+                        $pid = url_to_postid($resolved);
+                        if ($pid) $post_id = $pid;
+                    }
+                }
+            }
+
+            $results[] = [
+                'from'      => $url,
+                'post_id'   => $post_id,
+                'final_url' => $final_url,
+            ];
+        }
+
+        return new \WP_REST_Response(['results' => $results], 200);
+    }
+
+    private static function follow_redirect(string $url, int $max_hops = 5): string {
+        $current = $url;
+        for ($i = 0; $i < $max_hops; $i++) {
+            $response = wp_remote_request($current, [
+                'method'      => 'HEAD',
+                'timeout'     => 8,
+                'redirection' => 0, // Manual hop control
+                'sslverify'   => false,
+            ]);
+            if (is_wp_error($response)) break;
+            $code = wp_remote_retrieve_response_code($response);
+            if (!in_array($code, [301, 302, 303, 307, 308], true)) break;
+            $location = wp_remote_retrieve_header($response, 'location');
+            if (!$location) break;
+            // Make absolute if relative
+            if (!preg_match('#^https?://#i', $location)) {
+                $parsed   = wp_parse_url($current);
+                $location = $parsed['scheme'] . '://' . $parsed['host'] . '/' . ltrim($location, '/');
+            }
+            if ($location === $current) break;
+            $current = $location;
+        }
+        return ($current !== $url) ? $current : '';
     }
 
     public static function handle_apply_fix(\WP_REST_Request $request): \WP_REST_Response {
